@@ -66,6 +66,24 @@ python scripts/replay.py data/raw/session1.jsonl
 
 Windows에서는 `COM3` / `COM4` 형식으로 지정.
 
+## 낙하 감지 설정값 (`config/settings.yaml`)
+
+튜닝이 자주 발생하는 항목은 `config/settings.yaml`의 `processing:` / `detection:` 섹션에 모여 있습니다.
+
+| 섹션 | 항목 | 설명 | 기본값 |
+|------|------|------|--------|
+| processing | `min_snr` | 노이즈 포인트 제거용 최소 SNR (근거리일수록 낮게) | `8.0` |
+| processing | `roi.x / .y / .z` | 감지 대상으로 볼 관심 영역 범위 (m) | `[-1.5,1.5]` / `[0.3,2.5]` / `[-0.2,2.2]` |
+| processing | `min_abs_doppler` | 정적(비이동) 포인트 제거 임계값 — 낮출수록 느린 낙하도 포착 | `0.05` |
+| processing | `cluster_eps` | DBSCAN 클러스터링 반경 (m) — 근거리일수록 줄임 | `0.3` |
+| processing | `cluster_min_samples` | 클러스터로 인정할 최소 포인트 수 | `2` |
+| detection | `history_window` | 낙하 판정에 사용하는 프레임 이력 개수 (100ms × N) | `6` |
+| detection | `height_drop_threshold` | 조건 A: 이력 윈도우 내 높이 하락량 임계값 (m) | `0.3` |
+| detection | `fall_doppler_threshold` | 조건 A: 하향 도플러 보조 조건 (m/s) | `-0.2` |
+| detection | `z_velocity_threshold` | 조건 B: 프레임 간 Z 순간 속도 임계값, 자유낙하 1프레임 감지용 (m/s) | `-0.3` |
+
+> **주의**: 현재 실제 감지 로직([`arda/detection/fall_detector.py`](arda/detection/fall_detector.py))은 위 값을 `settings.yaml`에서 읽지 않고, 파일 상단에 `HEIGHT_DROP_THRESHOLD`, `FALL_DOPPLER_THRESHOLD`, `PEAK_Z_THRESHOLD`, `PEAK_DROP_THRESHOLD` 등 별도 상수로 하드코딩되어 있습니다. 임계값을 튜닝할 때는 `settings.yaml`과 `fall_detector.py` 양쪽을 함께 확인해주세요.
+
 ## 커밋 규칙
 
 - 작업 진행 중인 커밋은 커밋 메시지 맨 앞에 `[WIP]` 태그를 붙입니다. 예: `[WIP] 클러스터링 파라미터 튜닝`
