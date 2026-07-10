@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from arda.radar import IWR6843Sensor
 from arda.processing.pointcloud import PointCloud
-from arda.processing.clustering import cluster_points
+from arda.processing.clustering import cluster_points, select_target
 from arda.detection import FallDetector
 from arda.utils import get_logger
 
@@ -31,7 +31,7 @@ CLUSTER_EPS     = 0.15 # m — 10cm 물체 기준: 포인트 간 최대 거리 (
 CLUSTER_MINSAMP = 2    # 단일 노이즈 포인트 제거, 10cm 물체는 보통 2개 이상 반환
 
 # ROI Z축 범위 (1m): 센서 기준 -0.2 ~ 0.8m
-Z_RANGE = (-0.2, 0.8)
+Z_RANGE = (-0.8, 0.8)
 
 # 공중 물체 판별 기준 — fall_detector.py의 PEAK_Z_THRESHOLD와 동일
 # 실험 데이터: 실제 낙하 시 Z 0.57~0.69m, 노이즈 최대 0.36m
@@ -81,17 +81,8 @@ def main():
                 clusters = cluster_points(pc, eps=CLUSTER_EPS,
                                           min_samples=CLUSTER_MINSAMP)
 
-                # 3) 추적 대상 선택
-                #    공중(Z≥AIRBORNE_Z)에 있는 클러스터가 있으면 그 중 Z가 가장 높은 것 선택
-                #    (낙하 물체 우선) → 없으면 가장 큰 클러스터(바닥 추적)
-                if clusters:
-                    airborne = [c for c in clusters
-                                if c.centroid() is not None
-                                and c.centroid()[2] >= AIRBORNE_Z]
-                    target = (max(airborne, key=lambda c: c.centroid()[2])
-                              if airborne else max(clusters, key=len))
-                else:
-                    target = PointCloud([])
+                # 3) 추적 대상 선택 (이동 물체 우선)
+                target = select_target(clusters, airborne_z=AIRBORNE_Z)
 
                 # 4) 낙하 판정
                 is_falling = detector.update(target)
@@ -111,10 +102,9 @@ def main():
                 # 6) 낙하 이벤트 출력
                 if is_falling and fn - last_fall_frame > 3:
                     fall_count += 1
-                    c     = target.centroid()
-                    z_vel = detector.z_velocity()
-                    pos   = (f"X={c[0]:+.2f}m  Y={c[1]:.2f}m"
-                             if c is not None else "X=?  Y=?")
+                    c = detector.last_fall_centroid   # 착지 소실 시에도 마지막 위치 사용
+                    pos = (f"X={c[0]:+.2f}m  Y={c[1]:.2f}m"
+                           if c is not None else "X=?  Y=?")
                     print(
                         f"\n*** FALL #{fall_count:03d} ***  "
                         f"frame={fn}  {pos}  "

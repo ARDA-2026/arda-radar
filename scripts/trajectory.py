@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from arda.radar import IWR6843Sensor
 from arda.processing.pointcloud import PointCloud
-from arda.processing.clustering import cluster_points
+from arda.processing.clustering import cluster_points, select_target
 from arda.detection import FallDetector
 from arda.utils import get_logger
 
@@ -43,7 +43,7 @@ DEFAULT_CONFIG = "config/profiles/xwr68xx_AOP_profile_short_range.cfg"
 MIN_SNR         = 6.0
 CLUSTER_EPS     = 0.15
 CLUSTER_MINSAMP = 2
-Z_RANGE         = (-0.2, 0.8)
+Z_RANGE         = (-0.8, 0.8)
 AIRBORNE_Z      = 0.40  # 공중 물체 판별 기준 (fall_detector.PEAK_Z_THRESHOLD와 동일)
 
 TRAIL_LEN = 80
@@ -194,14 +194,7 @@ class FallTrajectoryPlotter:
                   .filter_roi(z_range=Z_RANGE))
 
         clusters = cluster_points(pc_all, eps=CLUSTER_EPS, min_samples=CLUSTER_MINSAMP)
-        if clusters:
-            airborne = [c for c in clusters
-                        if c.centroid() is not None
-                        and c.centroid()[2] >= AIRBORNE_Z]
-            target = (max(airborne, key=lambda c: c.centroid()[2])
-                      if airborne else max(clusters, key=len))
-        else:
-            target = PointCloud([])
+        target   = select_target(clusters, airborne_z=AIRBORNE_Z)
 
         is_falling = self._detector.update(target)
         centroid   = target.centroid()
@@ -212,10 +205,10 @@ class FallTrajectoryPlotter:
         # 낙하 감지 첫 프레임(상승 에지)에서 일시정지
         if is_falling and not self._prev_falling:
             self._paused = True
-            if centroid is not None:
-                pos_str = f"X={centroid[0]:+.2f} m  Y={centroid[1]:.2f} m"
-            else:
-                pos_str = "position unknown"
+            # 착지 소실 경우에도 마지막 위치를 사용
+            c = self._detector.last_fall_centroid
+            pos_str = (f"X={c[0]:+.2f} m  Y={c[1]:.2f} m"
+                       if c is not None else "position unknown")
             self._overlay.set_text(
                 f"FALL DETECTED\n{pos_str}\n\npress any key to resume"
             )

@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from arda.radar import IWR6843Sensor
 from arda.processing.pointcloud import PointCloud
-from arda.processing.clustering import cluster_points
+from arda.processing.clustering import cluster_points, select_target
 from arda.detection import FallDetector
 from arda.utils import get_logger
 
@@ -30,7 +30,7 @@ DEFAULT_CONFIG = "config/profiles/xwr68xx_AOP_profile_short_range.cfg"
 MIN_SNR         = 6.0
 CLUSTER_EPS     = 0.15
 CLUSTER_MINSAMP = 2
-Z_RANGE         = (-0.2, 0.8)
+Z_RANGE         = (-0.8, 0.8)
 
 
 def parse_args():
@@ -87,14 +87,7 @@ def main():
                             .filter_roi(z_range=Z_RANGE))
                 clusters = cluster_points(pc_all, eps=CLUSTER_EPS,
                                           min_samples=CLUSTER_MINSAMP)
-                if clusters:
-                    airborne = [c for c in clusters
-                                if c.centroid() is not None
-                                and c.centroid()[2] >= 0.40]
-                    target = (max(airborne, key=lambda c: c.centroid()[2])
-                              if airborne else max(clusters, key=len))
-                else:
-                    target = PointCloud([])
+                target   = select_target(clusters)
 
                 is_falling = detector.update(target)
                 centroid   = target.centroid()
