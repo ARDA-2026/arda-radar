@@ -19,9 +19,7 @@ ARDA/
 │   ├── processed/         # 전처리 결과
 │   └── logs/              # 이벤트 로그
 ├── models/                # 학습된 ML 모델 (옵션)
-├── scripts/
-│   ├── record.py          # 데이터 녹화
-│   └── replay.py          # 녹화 재생 & 검증
+├── scripts/               # 각 스크립트 역할은 "스크립트 설명" 절 참고
 ├── tests/                 # pytest 단위 테스트
 └── main.py                # 실시간 감지 실행
 ```
@@ -69,15 +67,15 @@ Windows에서는 `COM3` / `COM4` 형식으로 지정.
 ## 알고리즘 흐름
 
 ```
-레이더 프레임 → SNR/ROI 필터 → 정적 포인트 제거 → DBSCAN 클러스터링
-              → 최대 클러스터 선택 → FallDetector.update() → 낙하 여부
+레이더 프레임 → SNR/ROI 필터 → DBSCAN 클러스터링 → 타겟 클러스터 선택(select_target)
+              → FallDetector.update() → 낙하 여부
 ```
 
-1. **필터링**: 노이즈(낮은 SNR) 및 관심 영역(ROI) 밖 포인트 제거, 속도가 거의 없는 정적 포인트 제거
-2. **클러스터링**: 남은 포인트를 DBSCAN으로 묶고, 가장 큰 클러스터를 감지 대상으로 선택
-3. **낙하 판정** (`FallDetector`, 매 프레임 대상 클러스터의 중심 높이(Z)를 이력에 누적): 아래 두 조건 중 하나라도 만족하면 낙하로 판정
-   - **조건 A (완만한 하강)**: 최근 프레임 이력 동안 높이가 임계값 이상 떨어졌고, 동시에 하향 도플러도 감지됨
-   - **조건 B (급락)**: 이력 중 최고 높이가 일정 이상(공중에 있었음)이었다가, 현재 높이가 그 지점 대비 크게 떨어짐
+1. **필터링**: 노이즈(낮은 SNR) 및 관심 영역(ROI) 밖 포인트 제거
+2. **클러스터링 & 타겟 선택**: DBSCAN으로 포인트를 묶은 뒤, `select_target()`이 우선순위대로 추적 대상을 고름 — ①공중+하향 이동 ②공중 ③하향 이동 ④가장 큰 클러스터(fallback) 순
+3. **낙하 판정** (`FallDetector`, 매 프레임 타겟 중심 높이(Z)를 이력에 누적): 아래 두 경로 중 하나라도 만족하면 낙하로 판정
+   - **경로 1 (착지 후 소실, 주 경로)**: 피크(공중) 이후 일정 프레임 이상 연속 하강하다 클러스터가 레이더에서 사라지면(바닥 근처 소실) 착지로 판단
+   - **경로 2 (저 Z 직접 감지, 보조 경로)**: 물체가 레이더에 계속 보이는 상태로, 피크 대비 충분히 하강한 경우 직접 감지
 
 ## 낙하 감지 설정값 (`config/settings.yaml`)
 
@@ -91,11 +89,30 @@ Windows에서는 `COM3` / `COM4` 형식으로 지정.
 | processing | `cluster_eps` | DBSCAN 클러스터링 반경 (m) — 근거리일수록 줄임 | `0.3` |
 | processing | `cluster_min_samples` | 클러스터로 인정할 최소 포인트 수 | `2` |
 | detection | `history_window` | 낙하 판정에 사용하는 프레임 이력 개수 (100ms × N) | `6` |
-| detection | `height_drop_threshold` | 조건 A: 이력 윈도우 내 높이 하락량 임계값 (m) | `0.3` |
-| detection | `fall_doppler_threshold` | 조건 A: 하향 도플러 보조 조건 (m/s) | `-0.2` |
-| detection | `z_velocity_threshold` | 조건 B: 프레임 간 Z 순간 속도 임계값, 자유낙하 1프레임 감지용 (m/s) | `-0.3` |
 
-> **주의**: 현재 실제 감지 로직([`arda/detection/fall_detector.py`](arda/detection/fall_detector.py))은 위 값을 `settings.yaml`에서 읽지 않고, 파일 상단에 `HEIGHT_DROP_THRESHOLD`, `FALL_DOPPLER_THRESHOLD`, `PEAK_Z_THRESHOLD`, `PEAK_DROP_THRESHOLD` 등 별도 상수로 하드코딩되어 있습니다. 임계값을 튜닝할 때는 `settings.yaml`과 `fall_detector.py` 양쪽을 함께 확인해주세요.
+실제 판정 임계값은 [`arda/detection/fall_detector.py`](arda/detection/fall_detector.py) 상단 상수로 관리됩니다.
+
+| 상수 | 설명 | 기본값 |
+|------|------|--------|
+| `PEAK_Z_THRESHOLD` | 공중에 있었다고 판별할 최소 높이 (m) | `0.40` |
+| `PEAK_DROP_THRESHOLD` | 피크 대비 최소 하락폭 — 이 이상 떨어지면 낙하 확정 (m) | `0.35` |
+| `MIN_DESCENT_FRAMES` | 피크 이후 연속 하강해야 하는 최소 프레임 수 (100ms × N) | `5` |
+| `HISTORY_WINDOW` | 판정에 사용하는 프레임 이력 개수 | `10` |
+
+> **주의**: `config/settings.yaml`의 `detection:` 섹션(`height_drop_threshold`, `fall_doppler_threshold`, `z_velocity_threshold`)은 코드에서 읽어오지 않는 문서용 값이며, 이전 버전 알고리즘 기준이라 현재 로직과도 맞지 않습니다. 임계값을 튜닝할 때는 `fall_detector.py`의 상수를 직접 수정하세요.
+
+## 스크립트 설명 (`scripts/`)
+
+| 스크립트 | 역할 |
+|----------|------|
+| `check_ports.py` | 센서 연결 전 포트 진단 — CLI/Data 포트에서 raw 바이트가 들어오는지만 확인 |
+| `record.py` | 지정 시간만큼 레이더 데이터를 녹화해 JSON으로 저장 (임계값 튜닝용 데이터 수집) |
+| `record_and_view.py` | 짧게 녹화한 뒤 포인트·클러스터·타겟 무게중심의 Z(t)/X(t)/Y(t) 궤적을 그래프로 시각화 |
+| `replay.py` | 녹화된 JSONL 파일을 재생하며 낙하 감지 로직을 검증 (하드웨어 불필요) |
+| `detect.py` | 실시간 낙하 감지 실행 — SNR/ROI 필터 → DBSCAN → `select_target` → `FallDetector` |
+| `trajectory.py` | 실시간으로 Z축 하강 궤적과 감지 상태를 시각화 (`detect.py`와 동일 파이프라인) |
+| `monitor.py` | 낙하 감지 없이 원시 포인트 클라우드만 실시간 모니터링 |
+| `rdmap.py` | Range-Doppler Map(거리·속도별 신호 세기) 실시간 시각화 |
 
 ## 커밋 규칙
 
