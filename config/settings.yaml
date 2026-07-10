@@ -1,0 +1,23 @@
+radar:
+  cli_port: "/dev/ttyUSB0"
+  data_port: "/dev/ttyUSB1"
+  config_file: "config/profiles/xwr68xx_AOP_profile_short_range.cfg"
+
+processing:
+  min_snr: 8.0          # 근거리에서 SNR이 낮아질 수 있으므로 완화
+  roi:
+    x: [-1.5, 1.5]      # 좌우 ±1.5m
+    y: [0.3, 2.5]       # 센서 전방 0.3~2.5m
+    z: [-0.2, 2.2]      # 바닥~선 키
+  min_abs_doppler: 0.05  # 느린 낙하 포인트도 포착
+  cluster_eps: 0.3       # 근거리에서 포인트 밀도가 높아 eps를 줄임
+  cluster_min_samples: 2
+
+detection:
+  history_window: 6
+  height_drop_threshold: 0.3   # 조건 A: 윈도우 내 높이 변화량
+  fall_doppler_threshold: -0.2  # 도플러 기준 (radial 성분 보정)
+  z_velocity_threshold: -0.3   # 조건 B: 프레임 간 Z 순간 속도 (자유낙하 1프레임 내 감지)
+
+visualization:
+  enabled: true

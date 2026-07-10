@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# 데이터 (대용량 파일 제외)
+data/raw/
+data/processed/
+data/logs/
+data/*.json
+!data/**/.gitkeep
+
+# 학습된 모델
+models/*.pkl
+models/*.pt
+models/*.h5
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 레이더 설정 백업
+*.cfg.bak
