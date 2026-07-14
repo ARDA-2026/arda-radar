@@ -31,6 +31,7 @@ MIN_SNR         = 6.0
 CLUSTER_EPS     = 0.15
 CLUSTER_MINSAMP = 2
 Z_RANGE         = (-0.8, 0.8)
+MAX_JUMP        = 0.5   # m — 직전 프레임 무게중심 대비 허용 최대 이동 거리 (노이즈 튐 방지)
 
 
 def parse_args():
@@ -87,7 +88,8 @@ def main():
                             .filter_roi(z_range=Z_RANGE))
                 clusters = cluster_points(pc_all, eps=CLUSTER_EPS,
                                           min_samples=CLUSTER_MINSAMP)
-                target   = select_target(clusters)
+                target   = select_target(clusters, last_centroid=detector.predicted_centroid(),
+                                         max_jump=MAX_JUMP)
 
                 is_falling = detector.update(target)
                 centroid   = target.centroid()

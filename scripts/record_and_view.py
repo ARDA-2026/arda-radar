@@ -35,6 +35,7 @@ CLUSTER_EPS     = 0.15
 CLUSTER_MINSAMP = 2
 Z_RANGE         = (-0.8, 0.8)
 AIRBORNE_Z      = 0.40
+MAX_JUMP        = 0.5   # m — 직전 프레임 무게중심 대비 허용 최대 이동 거리 (노이즈 튐 방지)
 
 # 클러스터별 구분 색상 (최대 5개 클러스터)
 CLUSTER_COLORS = ["#e74c3c", "#3498db", "#2ecc71", "#9b59b6", "#f39c12"]
@@ -86,7 +87,9 @@ def record(args) -> list[dict]:
                 clusters = cluster_points(pc_all, eps=CLUSTER_EPS,
                                           min_samples=CLUSTER_MINSAMP)
 
-                target = select_target(clusters, airborne_z=AIRBORNE_Z)
+                target = select_target(clusters, airborne_z=AIRBORNE_Z,
+                                       last_centroid=detector.predicted_centroid(),
+                                       max_jump=MAX_JUMP)
 
                 # 최초 낙하 이후에는 판정 생략 (추적은 계속)
                 if first_fall_t is None:

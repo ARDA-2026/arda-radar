@@ -37,6 +37,10 @@ Z_RANGE = (-0.8, 0.8)
 # 실험 데이터: 실제 낙하 시 Z 0.57~0.69m, 노이즈 최대 0.36m
 AIRBORNE_Z = 0.40
 
+# 근접 게이팅: 직전 프레임 무게중심 대비 허용 최대 이동 거리 (m)
+# 노이즈 클러스터로 타겟이 튀는 것을 방지 (100ms 프레임 기준 낙하 최대 속도보다 넉넉히)
+MAX_JUMP = 0.5
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="낙하 감지 전용 — DBSCAN 물체 추적")
@@ -81,8 +85,10 @@ def main():
                 clusters = cluster_points(pc, eps=CLUSTER_EPS,
                                           min_samples=CLUSTER_MINSAMP)
 
-                # 3) 추적 대상 선택 (이동 물체 우선)
-                target = select_target(clusters, airborne_z=AIRBORNE_Z)
+                # 3) 추적 대상 선택 (이동 물체 우선 + 직전 위치 근접 게이팅)
+                target = select_target(clusters, airborne_z=AIRBORNE_Z,
+                                       last_centroid=detector.predicted_centroid(),
+                                       max_jump=MAX_JUMP)
 
                 # 4) 낙하 판정
                 is_falling = detector.update(target)

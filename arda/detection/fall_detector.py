@@ -5,6 +5,7 @@ import numpy as np
 
 from ..processing.pointcloud import PointCloud
 from ..utils import get_logger
+from .tracker import KalmanTracker
 
 logger = get_logger(__name__)
 
@@ -35,6 +36,11 @@ class FallDetector:
     경로 2 — 저 Z 직접 감지 (보조 경로):
         물체가 레이더에 보이는 상태로 충분히 낮은 위치까지 하강한 경우.
 
+    내부적으로 칼만 필터(KalmanTracker, 등속도 모델)를 태워 무게중심을
+    평활화한다. 궤적 판정(_height_history 등)은 원시 관측치가 아니라 이
+    필터링된 위치를 사용한다 — 한 프레임의 클러스터 선택이 잘못되어도
+    무게중심이 통째로 튀지 않고 예측과 블렌딩된 만큼만 움직이게 된다.
+
     last_fall_centroid: 감지 직전 마지막으로 알려진 무게중심 (X, Y, Z).
     """
 
@@ -48,10 +54,25 @@ class FallDetector:
         self._confirm_frames   = confirm_frames
         self._debug            = debug
 
-        self._last_centroid      = None   # 마지막으로 본 무게중심
+        self._tracker   = KalmanTracker(dt=FRAME_DT)
+        self._tracking  = False           # 칼만 필터가 최소 1회 이상 보정됐는지
+
+        self._last_centroid      = None   # 마지막으로 본(필터링된) 무게중심
         self.last_fall_centroid  = None   # 낙하 감지 시 저장된 위치
 
     # ── 메인 업데이트 ────────────────────────────────────────────────────────
+
+    def predicted_centroid(self) -> np.ndarray | None:
+        """다음 관측이 위치할 것으로 예상되는 지점 (칼만 예측, 게이팅 기준점).
+
+        내부 상태를 변경하지 않는 미리보기(peek)다 — 실제 시간 전진은
+        update()/_update_no_target() 호출 시 이루어진다. 아직 트랙이
+        시작되지 않았으면(첫 관측 전) None을 반환해 게이팅 없이 전역
+        탐색하도록 한다.
+        """
+        if not self._tracking:
+            return None
+        return (self._tracker.F @ self._tracker.x)[:3].flatten()
 
     def update(self, pc: PointCloud) -> bool:
         """새 프레임을 입력받아 낙하 여부를 반환한다."""
@@ -59,6 +80,12 @@ class FallDetector:
 
         if centroid is None:
             return self._update_no_target()
+
+        if self._tracking:
+            self._tracker.predict()
+        self._tracker.update(np.asarray(centroid, dtype=np.float64))
+        self._tracking = True
+        centroid = self._tracker.x[:3].flatten()   # 평활화된 위치로 대체
 
         self._last_centroid = centroid
         height       = float(centroid[2])
@@ -85,6 +112,10 @@ class FallDetector:
 
     def _update_no_target(self) -> bool:
         """타겟 클러스터가 없을 때 — 착지 소실 패턴 확인 후 이력 업데이트."""
+        # 관측 없음 — 보정 없이 예측만으로 코스팅 (짧은 소실 대비)
+        if self._tracking:
+            self._tracker.predict()
+
         # 착지 소실 감지: 히스토리에 충분한 하강 궤적이 있으면 낙하로 판정
         fell = False
         if not self._fall_triggered:
@@ -166,17 +197,23 @@ class FallDetector:
 
     # ── 유틸 ─────────────────────────────────────────────────────────────────
 
+    @property
+    def last_centroid(self) -> np.ndarray | None:
+        """가장 최근에 관측된 무게중심. select_target()의 근접 게이팅용."""
+        return self._last_centroid
+
     def z_velocity(self) -> float:
-        """직전 두 프레임의 Z 순간 속도 (m/s). 시각화용."""
-        valid = [h for h in self._height_history if h is not None]
-        if len(valid) < 2:
-            return 0.0
-        return (valid[-1] - valid[-2]) / FRAME_DT
+        """Z 속도 (m/s). 시각화용 — 칼만 필터의 평활화된 속도 추정치를 쓴다."""
+        if self._tracking:
+            return float(self._tracker.x[5, 0])
+        return 0.0
 
     def reset(self) -> None:
         self._height_history.clear()
         self._doppler_history.clear()
         self._fall_triggered   = False
         self._candidate_frames = 0
+        self._tracker           = KalmanTracker(dt=FRAME_DT)
+        self._tracking          = False
         self._last_centroid    = None
         self.last_fall_centroid = None
