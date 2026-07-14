@@ -46,6 +46,9 @@ pytest
 # 센서 설정 & 실시간 감지 실행 (하드웨어 연결 필요)
 python main.py --cli-port /dev/ttyUSB0 --data-port /dev/ttyUSB1
 
+# 타겟 좌표는 기본적으로 UDP(127.0.0.1:9999)로 전송되어 sibling 프로젝트인
+# arda-servo(서보 모터 제어기)가 소비한다. 비활성화하려면 --no-servo-out.
+
 # 데이터 녹화 (60초, 하드웨어 연결 필요)
 python scripts/record.py --output data/raw/session1.jsonl --duration 60
 
