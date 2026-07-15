@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from arda.radar import IWR6843Sensor
 from arda.processing.pointcloud import PointCloud
-from arda.processing.clustering import cluster_points, select_target
+from arda.processing.clustering import cluster_points
 from arda.detection import FallDetector
 from arda.utils import get_logger
 
@@ -85,10 +85,9 @@ def main():
                 clusters = cluster_points(pc, eps=CLUSTER_EPS,
                                           min_samples=CLUSTER_MINSAMP)
 
-                # 3) 추적 대상 선택 (이동 물체 우선 + 직전 위치 근접 게이팅)
-                target = select_target(clusters, airborne_z=AIRBORNE_Z,
-                                       last_centroid=detector.predicted_centroid(),
-                                       max_jump=MAX_JUMP)
+                # 3) 추적 대상 선택 (이동 물체 우선 + 근접 게이팅 + 재포착 유예)
+                target = detector.choose_target(clusters, airborne_z=AIRBORNE_Z,
+                                                max_jump=MAX_JUMP)
 
                 # 4) 낙하 판정
                 is_falling = detector.update(target)

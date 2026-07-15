@@ -59,3 +59,51 @@ def test_kalman_smooths_single_spurious_jump():
     jumped_z = float(detector.last_centroid[2])
 
     assert abs(jumped_z - stable_z) < abs(3.0 - stable_z)
+
+
+def test_no_fall_while_bouncing_back_up_after_drop():
+    # 피크에서 충분히 하강한 뒤 바닥 근처에서 다시 위로 향하기 시작하면
+    # (바운스, 혹은 노이즈로 무게중심이 끌려 올라가는 경우) — 아직 피크보다
+    # 낮은 값이라도 "낙하 중"으로 보면 안 된다 (궤적이 위로 향하는 중이므로).
+    detector = FallDetector(history_window=10)
+    for z in [0.6, 0.6, 0.6, 0.5, 0.35, 0.2, 0.1, 0.05]:
+        detector.update(_make_pc(z=z, doppler=-0.5))
+
+    # 여기까지는 하강 궤적이 확정되어 낙하로 판정된 상태
+    assert detector.update(_make_pc(z=0.1, doppler=0.3))  # 살짝 반등 — 아직 완만함
+
+    # 뚜렷하게 위로 향하는 프레임이 이어지면 더 이상 낙하로 보지 않아야 한다
+    fell = detector.update(_make_pc(z=0.3, doppler=0.5))
+    assert not fell
+
+
+def test_fall_detected_on_low_fast_drop():
+    # data/failDetecting.png 재현: 피크 Z가 0.38m로 낮고(원래 임계값 0.40m
+    # 미만), 소실 전까지 유효 프레임이 3개뿐인 낮고 빠른 실제 낙하.
+    # 궤적 자체는 단조 하강이라 감지되어야 한다.
+    detector = FallDetector(history_window=10)
+    fell = False
+    for z in [0.38, 0.25, -0.22, -0.65]:
+        fell = detector.update(_make_pc(z=z, doppler=-0.5))
+    assert fell
+
+
+def test_choose_target_coasts_through_brief_gap_instead_of_jumping():
+    # data/failTracking.png 재현: 실제 낙하물의 클러스터가 한두 프레임
+    # 형성되지 않고, 그 자리에 무관한 정지 클러스터(예: 손/가구)만 남으면
+    # 즉시 그걸로 "재포착"하면 안 된다 — 몇 프레임은 코스팅하며 놓쳐야 한다.
+    detector = FallDetector(history_window=10)
+    for z in [0.55, 0.44, 0.22, 0.08]:
+        target = detector.choose_target([_make_pc(z=z, doppler=-0.3)], airborne_z=0.40)
+        detector.update(target)
+
+    stationary_elsewhere = _make_pc(z=0.45, doppler=0.0)  # 실제 물체와 무관한 정지 클러스터
+
+    for _ in range(2):  # 유예 프레임(REACQUIRE_GRACE_FRAMES) 이내
+        target = detector.choose_target([stationary_elsewhere], airborne_z=0.40)
+        assert len(target) == 0  # 즉시 재포착하지 않고 이번 프레임은 놓친다
+        detector.update(target)
+
+    # 유예 프레임을 넘기면 그제서야 전역 재탐색을 허용한다
+    target = detector.choose_target([stationary_elsewhere], airborne_z=0.40)
+    assert len(target) > 0

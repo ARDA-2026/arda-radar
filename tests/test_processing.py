@@ -111,3 +111,19 @@ def test_select_target_rejects_upward_noise_even_when_euclidean_closer():
     target = select_target([noise, tracked], last_centroid=last_centroid, max_jump=0.5)
 
     assert target.centroid()[2] == pytest.approx(0.30)
+
+
+def test_select_target_global_reacquire_prefers_descending_over_elevated():
+    # data/wrongTracking.png 재현: 근접 게이팅 범위 안에는 아무 후보도 없어
+    # 전역 재탐색으로 넘어갈 때, 실제로 하강 중인(비상승) 클러스터가 있다면
+    # 단지 "공중(Z>=airborne_z)"이라는 이유만으로 더 위에 있는(엉뚱한/정지된)
+    # 클러스터를 우선하면 안 된다.
+    last_centroid = np.array([0.0, 1.0, 0.40], dtype=np.float32)
+    elevated   = _cluster([(0.0, 1.0, 0.56)], doppler=0.0)   # 상승 — 공중 조건(tier2)만 만족
+    descending = _cluster([(0.0, 1.0, 0.10)], doppler=-0.5)  # 비상승 — 하향 조건(tier3) 만족
+
+    # max_jump을 작게 줘서 둘 다 근접 게이팅에는 못 들고 전역 재탐색으로 넘어가게 한다
+    target = select_target([elevated, descending], last_centroid=last_centroid,
+                           max_jump=0.05, strict=False)
+
+    assert target.centroid()[2] == pytest.approx(0.10)

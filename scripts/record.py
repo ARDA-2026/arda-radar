@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from arda.radar import IWR6843Sensor
 from arda.processing.pointcloud import PointCloud
-from arda.processing.clustering import cluster_points, select_target
+from arda.processing.clustering import cluster_points
 from arda.detection import FallDetector
 from arda.utils import get_logger
 
@@ -88,8 +88,7 @@ def main():
                             .filter_roi(z_range=Z_RANGE))
                 clusters = cluster_points(pc_all, eps=CLUSTER_EPS,
                                           min_samples=CLUSTER_MINSAMP)
-                target   = select_target(clusters, last_centroid=detector.predicted_centroid(),
-                                         max_jump=MAX_JUMP)
+                target   = detector.choose_target(clusters, max_jump=MAX_JUMP)
 
                 is_falling = detector.update(target)
                 centroid   = target.centroid()

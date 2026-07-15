@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from arda.radar import IWR6843Sensor
 from arda.processing.pointcloud import PointCloud
-from arda.processing.clustering import cluster_points, select_target
+from arda.processing.clustering import cluster_points
 from arda.detection import FallDetector
 
 DEFAULT_CONFIG = "config/profiles/xwr68xx_AOP_profile_short_range.cfg"
@@ -87,9 +87,8 @@ def record(args) -> list[dict]:
                 clusters = cluster_points(pc_all, eps=CLUSTER_EPS,
                                           min_samples=CLUSTER_MINSAMP)
 
-                target = select_target(clusters, airborne_z=AIRBORNE_Z,
-                                       last_centroid=detector.predicted_centroid(),
-                                       max_jump=MAX_JUMP)
+                target = detector.choose_target(clusters, airborne_z=AIRBORNE_Z,
+                                                max_jump=MAX_JUMP)
 
                 # 최초 낙하 이후에는 판정 생략 (추적은 계속)
                 if first_fall_t is None:

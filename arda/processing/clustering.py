@@ -26,7 +26,8 @@ def select_target(clusters: list[PointCloud],
                   fall_doppler: float = -0.1,
                   last_centroid: np.ndarray | None = None,
                   max_jump: float = 0.5,
-                  max_rise: float = 0.05) -> PointCloud:
+                  max_rise: float = 0.05,
+                  strict: bool = False) -> PointCloud:
     """낙하 물체 추적을 위한 클러스터 선택.
 
     정적 물체(도플러 ≈ 0)보다 이동 물체를 우선하기 위해 네 단계로 선택한다.
@@ -62,6 +63,21 @@ def select_target(clusters: list[PointCloud],
     노이즈에 락인되었거나 실제 물체가 화면에 없는 경우) 게이팅을 풀고
     전체 클러스터에서 1~3순위를 다시 탐색한다 — 그래야 실제 낙하 물체가
     직전 위치와 무관하게(최초 포착, 재포착 등) 나타났을 때도 놓치지 않는다.
+    단, 이 전역 재탐색에서도 last_centroid보다 위로 튀는 클러스터는 먼저
+    배제하고 찾는다 — 그렇지 않으면 실제로는 더 낮은 곳에서 계속 하강
+    중인 물체가 있는데도, 그보다 위에 있는(어쩌면 정지된) 클러스터가
+    "공중(Z>=airborne_z)"이라는 이유만으로 tier2에서 먼저 걸려 잘못
+    재포착될 수 있다 (data/wrongTracking.png 재현: 이미 하강 중인
+    클러스터가 있는데도 위쪽 클러스터로 갔다가 뒤늦게 뚝 떨어짐).
+    비상승 후보가 전역에 하나도 없을 때만 상승 후보도 허용한다.
+
+    다만 strict=True면 이 전역 재탐색을 하지 않고 빈 PointCloud를
+    반환한다. 실제 추적 중이던 물체의 클러스터가 어쩌다 한두 프레임
+    형성되지 않았을 때(포인트 수 부족 등), 근처와 무관한 엉뚱한 클러스터
+    (다른 정지 물체 등)를 즉시 "재포착"으로 착각해 무게중심이 그쪽으로
+    튀는 것을 막기 위함이다 — 호출자(FallDetector.choose_target)가 몇
+    프레임 정도는 이렇게 "일단 놓침"으로 처리해 칼만 필터가 예측만으로
+    버티게 하고, 그게 계속되면 그때 strict=False로 전역 재탐색을 허용한다.
     """
     if not clusters:
         return PointCloud([])
@@ -112,7 +128,15 @@ def select_target(clusters: list[PointCloud],
                         and qualifies(c)]
         if nearby_valid:
             return min(nearby_valid, key=dist_to_last)  # 직전 위치에 가장 가까운 것 = 같은 물체
+        if strict:
+            return PointCloud([])  # 근처에 신뢰할 후보 없음 — 이번 프레임은 그냥 놓침
         # 근처(비상승)에 물리적으로 유의미한 후보가 없음 — 게이팅 해제 후 전역 재탐색
+
+        # 전역 재탐색이라도 상승 후보는 최후의 수단으로만 — 비상승 후보를 먼저 시도
+        non_rising = [c for c in clusters if is_not_rising(c)]
+        result = pick(non_rising)
+        if result is not None:
+            return result
 
     result = pick(clusters)
     if result is not None:

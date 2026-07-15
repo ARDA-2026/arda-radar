@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from arda.radar import IWR6843Sensor
 from arda.processing.pointcloud import PointCloud
-from arda.processing.clustering import cluster_points, select_target
+from arda.processing.clustering import cluster_points
 from arda.detection import FallDetector
 from arda.utils import get_logger
 
@@ -195,9 +195,8 @@ class FallTrajectoryPlotter:
                   .filter_roi(z_range=Z_RANGE))
 
         clusters = cluster_points(pc_all, eps=CLUSTER_EPS, min_samples=CLUSTER_MINSAMP)
-        target   = select_target(clusters, airborne_z=AIRBORNE_Z,
-                                 last_centroid=self._detector.predicted_centroid(),
-                                 max_jump=MAX_JUMP)
+        target   = self._detector.choose_target(clusters, airborne_z=AIRBORNE_Z,
+                                                max_jump=MAX_JUMP)
 
         is_falling = self._detector.update(target)
         centroid   = target.centroid()
