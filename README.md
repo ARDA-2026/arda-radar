@@ -67,6 +67,68 @@ python scripts/replay.py data/raw/session1.jsonl
 
 Windows에서는 `COM3` / `COM4` 형식으로 지정.
 
+## 좌표 기준(원점) 및 유효 범위 수정
+
+레이더가 출력하는 `(x, y, z)`는 **센서 자체를 원점(0,0,0)으로 하는 좌표**입니다.
+
+| 축 | 의미 | 단위 |
+|----|------|------|
+| `x` | 센서 정면 기준 좌우 (우측이 +) | m |
+| `y` | 센서 정면 거리 (센서 바로 앞이 0, 항상 양수) | m |
+| `z` | 센서 기준 높이 (센서와 같은 높이가 0) | m |
+
+**원점 자체(0,0,0)는 소프트웨어에서 옮길 수 없습니다** — TI mmWave 하드웨어의
+안테나 기준점으로 고정되어 있어, 원점을 바꾸려면 센서를 물리적으로
+재장착/재조준해야 합니다. 소프트웨어에서 조정 가능한 건 "이 원점을 기준으로
+어느 범위까지를 유효한 타겟으로 볼지"(ROI)입니다.
+
+**ROI를 바꾸려면 여기를 고치세요**: [`arda/processing/pointcloud.py`](arda/processing/pointcloud.py)의
+`PointCloud.filter_roi()` 기본 인자(`x_range`, `y_range`, `z_range`, 단위 m).
+`main.py`의 감지 루프(`pc.filter_roi()`)가 인자 없이 호출하므로 이 기본값이
+그대로 적용됩니다. `config/settings.yaml`의 `processing.roi`는 코드에서
+읽지 않는 문서용 값이라 여기를 고쳐도 반영되지 않습니다 (아래 "낙하 감지
+설정값" 섹션의 주의사항 참고).
+
+> arda-servo와 연계할 때는 이 원점·좌표축이 곧 서보 각도 계산의 기준이
+> 됩니다 — 레이더와 서보가 물리적으로 같은 위치·같은 정면 방향에 있다고
+> 가정하므로, 실제로 떨어져 있거나 방향이 어긋나 있다면 arda-servo 쪽
+> README의 "좌표 기준(원점) 보정" 섹션을 참고하세요.
+
+### 설치 위치 기준 실좌표 변환 (`site`)
+
+낙하가 확정되면, 센서 기준 로컬 좌표를 **이 레이더가 실제로 설치된
+지점의 고정 실좌표(시설/도면 좌표계 등)** 로 변환해 로그에 남깁니다.
+위 ROI와 달리 이 값은 **실제로 코드에서 읽어서 사용**합니다.
+
+**설정 위치**: `config/settings.yaml`의 `site.x` / `site.y` / `site.z`
+(단위 m, 설치 시 1회 실측해서 채워 넣는 값). 설정 파일 경로는
+`--settings`로 바꿀 수 있습니다 (`--config`는 레이더 칩 자체의 `.cfg`
+프로파일 경로라 서로 다른 옵션입니다).
+
+```yaml
+site:
+  x: 12.4   # 시설 도면 기준 X (m)
+  y: 3.1    # 시설 도면 기준 Y (m)
+  z: 1.1    # 이 레이더가 설치된 "바닥 기준" 높이 (m) — 이 좌표계는 바닥을 Z=0으로 둔다
+```
+
+**이 좌표계는 바닥을 Z=0으로 정의합니다** — `site.z`는 그 자체로 "바닥에서
+센서까지의 높이"입니다. X, Y는 로컬 좌표에 `site.x`/`site.y`를 더하는
+평행이동으로 변환합니다 ([`arda/utils/site.py`](arda/utils/site.py)의
+`to_site_coords()`). 센서가 정면으로 보는 방향(heading)이 시설 좌표계
+축과 다르면 그 회전은 보정하지 않으므로, 센서를 시설 좌표계 축에
+맞춰(예: 정북 방향 등) 장착하거나 별도 회전 보정이 필요합니다.
+
+**Z는 실측값을 쓰지 않고 항상 0(바닥)으로 보고합니다.** 낙하가 확정되는
+순간의 실측 로컬 Z(`last_centroid[2]`)는 "바닥에 닿은 높이"가 아니라
+"피크보다 `PEAK_DROP_THRESHOLD`(기본 0.35m) 이상 떨어진 순간"의
+높이라 아직 완전히 쓰러지기 전일 수 있어 신뢰할 수 없습니다. 대신 낙하는
+바닥에서 일어난다고 간주하고, 위 좌표계 정의(바닥=Z 0)를 그대로
+사용합니다 — `site.z`가 어떤 값이든 상관없이 항상 실좌표 Z=0으로
+보고됩니다 (`site.z`가 그 자체로 "바닥 기준 높이"이므로, 바닥의 실좌표는
+정의상 언제나 0입니다). 변환 결과는 낙하 확정 시 `logger.warning`으로
+남을 뿐 아직 서버로 전송하지는 않습니다 — 서버 연동은 이후 단계입니다.
+
 ## 알고리즘 흐름
 
 ```
@@ -102,7 +164,7 @@ Windows에서는 `COM3` / `COM4` 형식으로 지정.
 | `MIN_DESCENT_FRAMES` | 피크 이후 연속 하강해야 하는 최소 프레임 수 (100ms × N) | `5` |
 | `HISTORY_WINDOW` | 판정에 사용하는 프레임 이력 개수 | `10` |
 
-> **주의**: `config/settings.yaml`의 `detection:` 섹션(`height_drop_threshold`, `fall_doppler_threshold`, `z_velocity_threshold`)은 코드에서 읽어오지 않는 문서용 값이며, 이전 버전 알고리즘 기준이라 현재 로직과도 맞지 않습니다. 임계값을 튜닝할 때는 `fall_detector.py`의 상수를 직접 수정하세요.
+> **주의**: `config/settings.yaml`은 현재 `main.py`가 전혀 읽지 않는 문서용 파일입니다. `detection:` 섹션(`height_drop_threshold`, `fall_doppler_threshold`, `z_velocity_threshold`)은 이전 버전 알고리즘 기준이라 현재 로직과도 맞지 않고, `processing:` 섹션(`roi`, `min_snr` 등)도 마찬가지로 실제로는 반영되지 않습니다. 값을 튜닝할 때는 `fall_detector.py` 상단 상수(판정 임계값) 또는 `arda/processing/pointcloud.py`의 `filter_roi`/`filter_snr` 기본 인자(ROI·SNR)를 직접 수정하세요.
 
 ## 스크립트 설명 (`scripts/`)
 
