@@ -3,15 +3,21 @@ radar:
   data_port: "/dev/ttyUSB1"
   config_file: "config/profiles/xwr68xx_AOP_profile_short_range.cfg"
 
+# main.py와 scripts/ 아래 실시간·분석 스크립트들이 공통으로 읽는
+# 전처리/타겟 선택 튜닝값 (arda.utils.load_processing_config).
+# 이전엔 각 스크립트 상단에 동일한 값이 개별 상수로 중복 정의돼 있었다 —
+# 여기 한 곳만 고치면 전부에 반영된다.
 processing:
-  min_snr: 8.0          # 근거리에서 SNR이 낮아질 수 있으므로 완화
+  min_snr: 6.0           # 작은 물체의 약한 반사도 포착
   roi:
-    x: [-1.5, 1.5]      # 좌우 ±1.5m
+    x: [-1.0, 1.0]      # 좌우 ±1.0m
     y: [0.2, 1.5]       # 센서 전방 0.2~1.5m
-    z: [-1.0, 1.0]      # 바닥~선 키
-  min_abs_doppler: 0.05  # 느린 낙하 포인트도 포착
-  cluster_eps: 0.3       # 근거리에서 포인트 밀도가 높아 eps를 줄임
-  cluster_min_samples: 2
+    z: [-1.2, 0.6]      # 바닥 근처~선 키
+  min_abs_doppler: 0.05  # 느린 낙하 포인트도 포착 (main.py의 filter_stationary 전용)
+  cluster_eps: 0.15      # m — 10cm 물체 기준: 포인트 간 최대 거리 (물체 크기 + 측정 오차)
+  cluster_min_samples: 2 # 단일 노이즈 포인트 제거, 10cm 물체는 보통 2개 이상 반환
+  airborne_z: 0.00       # m — 공중 판별 최소 높이 (select_target/choose_target)
+  max_jump: 0.5          # m — 직전 프레임 무게중심 대비 허용 최대 이동 거리 (choose_target)
 
 detection:
   history_window: 6

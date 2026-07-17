@@ -28,14 +28,20 @@ from arda.radar import IWR6843Sensor
 from arda.processing.pointcloud import PointCloud
 from arda.processing.clustering import cluster_points
 from arda.detection import FallDetector
+from arda.utils import load_processing_config
 
 DEFAULT_CONFIG = "config/profiles/xwr68xx_AOP_profile_short_range.cfg"
-MIN_SNR         = 6.0
-CLUSTER_EPS     = 0.15
-CLUSTER_MINSAMP = 2
-Z_RANGE         = (-0.8, 0.8)
-AIRBORNE_Z      = 0.40
-MAX_JUMP        = 0.5   # m — 직전 프레임 무게중심 대비 허용 최대 이동 거리 (노이즈 튐 방지)
+
+# detect.py와 동일하게 config/settings.yaml의 processing: 섹션에서 읽어온다.
+_cfg = load_processing_config()
+MIN_SNR         = _cfg["min_snr"]
+CLUSTER_EPS     = _cfg["cluster_eps"]
+CLUSTER_MINSAMP = _cfg["cluster_min_samples"]
+ROI_X           = _cfg["roi_x"]
+ROI_Y           = _cfg["roi_y"]
+Z_RANGE         = _cfg["roi_z"]
+AIRBORNE_Z      = _cfg["airborne_z"]
+MAX_JUMP        = _cfg["max_jump"]
 
 # 클러스터별 구분 색상 (최대 5개 클러스터)
 CLUSTER_COLORS = ["#e74c3c", "#3498db", "#2ecc71", "#9b59b6", "#f39c12"]
@@ -83,7 +89,7 @@ def record(args) -> list[dict]:
                 # 동일 파이프라인
                 pc_all   = (PointCloud(frame.get("points", []))
                             .filter_snr(MIN_SNR)
-                            .filter_roi(z_range=Z_RANGE))
+                            .filter_roi(x_range=ROI_X, y_range=ROI_Y, z_range=Z_RANGE))
                 clusters = cluster_points(pc_all, eps=CLUSTER_EPS,
                                           min_samples=CLUSTER_MINSAMP)
 

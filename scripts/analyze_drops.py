@@ -32,14 +32,21 @@ from arda.processing.clustering import cluster_points
 from arda.detection import FallDetector
 from arda.detection.fall_detector import (
     PEAK_Z_THRESHOLD, PEAK_DROP_THRESHOLD, MIN_DESCENT_FRAMES, RISING_TOLERANCE,
+    FREEFALL_MIN_FRAMES, FREEFALL_ACCEL_MIN, FREEFALL_ACCEL_MAX, FRAME_DT,
 )
+from arda.utils import load_processing_config
 
-MIN_SNR         = 6.0
-CLUSTER_EPS     = 0.15
-CLUSTER_MINSAMP = 2
-Z_RANGE         = (-0.8, 0.8)
-AIRBORNE_Z      = 0.40
-MAX_JUMP        = 0.5
+# detect.py 등 실시간 스크립트와 동일하게 config/settings.yaml의
+# processing: 섹션에서 읽어온다.
+_cfg = load_processing_config()
+MIN_SNR         = _cfg["min_snr"]
+CLUSTER_EPS     = _cfg["cluster_eps"]
+CLUSTER_MINSAMP = _cfg["cluster_min_samples"]
+ROI_X           = _cfg["roi_x"]
+ROI_Y           = _cfg["roi_y"]
+Z_RANGE         = _cfg["roi_z"]
+AIRBORNE_Z      = _cfg["airborne_z"]
+MAX_JUMP        = _cfg["max_jump"]
 
 TRIAL_COLORS = ["#e74c3c", "#3498db", "#2ecc71", "#9b59b6", "#f39c12"]
 
@@ -74,7 +81,7 @@ def replay(path: Path, near_y_max: float | None = None,
     for fr in data["frames"]:
         pc = (PointCloud(fr["points"])
               .filter_snr(MIN_SNR)
-              .filter_roi(z_range=Z_RANGE))
+              .filter_roi(x_range=ROI_X, y_range=ROI_Y, z_range=Z_RANGE))
         clusters = cluster_points(pc, eps=CLUSTER_EPS, min_samples=CLUSTER_MINSAMP)
 
         candidates = clusters
@@ -119,17 +126,8 @@ def summarize(result: dict) -> dict:
     }
 
 
-def diagnose(result: dict) -> str:
-    """미감지 사유를 _trajectory_check와 동일한 조건 순서로 근사 진단한다.
-
-    실제 FallDetector는 칼만 평활화된 위치로 판정하므로 여기(원시 target
-    centroid 기준)와 미세하게 다를 수 있지만, 어느 게이트에서 막혔는지
-    가늠하는 데는 충분하다.
-    """
-    valid = [(i, z) for i, z in enumerate(result["zs"]) if z is not None]
-    if len(valid) < 2:
-        return "유효 관측 2프레임 미만"
-
+def _diagnose_peak_drop(valid: list[tuple[int, float]]) -> str:
+    """경로 1/2(피크-하강) 미감지 사유."""
     peak_pos   = max(range(len(valid)), key=lambda k: valid[k][1])
     peak_z     = valid[peak_pos][1]
     peak_frame = valid[peak_pos][0]
@@ -150,7 +148,52 @@ def diagnose(result: dict) -> str:
     if drop < PEAK_DROP_THRESHOLD:
         return f"하락폭({drop:.2f}m) < 임계값({PEAK_DROP_THRESHOLD}m)"
 
-    return "조건 충족 (다른 원인으로 미감지 — 코드 직접 확인 필요)"
+    return ""  # 경로 1/2 조건 충족 — 미감지 사유 아님
+
+
+def _diagnose_freefall(valid: list[tuple[int, float]]) -> str:
+    """경로 3(자유낙하) 미감지 사유 — fall_detector._freefall_check와 동일 로직."""
+    if len(valid) < FREEFALL_MIN_FRAMES:
+        return f"유효 프레임 {len(valid)}개 < {FREEFALL_MIN_FRAMES}개(자유낙하 판정 최소치)"
+
+    recent = valid[-FREEFALL_MIN_FRAMES:]
+    velocities, midpoints = [], []
+    for (i0, z0), (i1, z1) in zip(recent, recent[1:]):
+        dt = (i1 - i0) * FRAME_DT
+        if dt <= 0:
+            return "프레임 순서 이상(dt<=0)"
+        velocities.append((z1 - z0) / dt)
+        midpoints.append((i0 + i1) / 2.0 * FRAME_DT)
+
+    if any(v2 >= v1 for v1, v2 in zip(velocities, velocities[1:])):
+        return "구간 사이 가속이 끊김(반등/정체)"
+
+    total_dt = midpoints[-1] - midpoints[0]
+    accel = (velocities[-1] - velocities[0]) / total_dt if total_dt > 0 else 0.0
+    if not (-FREEFALL_ACCEL_MAX <= accel <= -FREEFALL_ACCEL_MIN):
+        return f"가속도({accel:+.1f}m/s²)가 자유낙하 범위(-{FREEFALL_ACCEL_MAX}~-{FREEFALL_ACCEL_MIN}) 밖"
+
+    return ""  # 경로 3 조건 충족 — 미감지 사유 아님
+
+
+def diagnose(result: dict) -> str:
+    """미감지 사유를 경로 1/2(피크-하강)·경로 3(자유낙하) 둘 다 근사 진단한다.
+
+    실제 FallDetector는 칼만 평활화된 위치로 판정하므로 여기(원시 target
+    centroid 기준)와 미세하게 다를 수 있지만, 어느 게이트에서 막혔는지
+    가늠하는 데는 충분하다.
+    """
+    valid = [(i, z) for i, z in enumerate(result["zs"]) if z is not None]
+    if len(valid) < 2:
+        return "유효 관측 2프레임 미만"
+
+    peak_drop_reason = _diagnose_peak_drop(valid)
+    freefall_reason   = _diagnose_freefall(valid)
+
+    if not peak_drop_reason or not freefall_reason:
+        return "조건 충족 (다른 원인으로 미감지 — 코드 직접 확인 필요)"
+
+    return f"[피크-하강] {peak_drop_reason}  /  [자유낙하] {freefall_reason}"
 
 
 def plot_points_clusters(results: list[dict], folder: Path) -> Path:

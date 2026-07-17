@@ -138,33 +138,47 @@ site:
 
 1. **필터링**: 노이즈(낮은 SNR) 및 관심 영역(ROI) 밖 포인트 제거
 2. **클러스터링 & 타겟 선택**: DBSCAN으로 포인트를 묶은 뒤, `select_target()`이 우선순위대로 추적 대상을 고름 — ①공중+하향 이동 ②공중 ③하향 이동 ④가장 큰 클러스터(fallback) 순
-3. **낙하 판정** (`FallDetector`, 매 프레임 타겟 중심 높이(Z)를 이력에 누적): 아래 두 경로 중 하나라도 만족하면 낙하로 판정
+3. **낙하 판정** (`FallDetector`, 매 프레임 타겟 중심 높이(Z)를 이력에 누적): 아래 세 경로 중 하나라도 만족하면 낙하로 판정
    - **경로 1 (착지 후 소실, 주 경로)**: 피크(공중) 이후 일정 프레임 이상 연속 하강하다 클러스터가 레이더에서 사라지면(바닥 근처 소실) 착지로 판단
    - **경로 2 (저 Z 직접 감지, 보조 경로)**: 물체가 레이더에 계속 보이는 상태로, 피크 대비 충분히 하강한 경우 직접 감지
+   - **경로 3 (자유낙하 궤적, 시작 위치 무관)**: `PEAK_Z_THRESHOLD` 같은 절대 높이 기준 없이, 최근 프레임들의 속도가 중력 근방으로 계속 가속하며 떨어지는 패턴이면 어디서 처음 포착됐든 낙하로 판정
 
 ## 낙하 감지 설정값 (`config/settings.yaml`)
 
-튜닝이 자주 발생하는 항목은 `config/settings.yaml`의 `processing:` / `detection:` 섹션에 모여 있습니다.
+`config/settings.yaml`의 `processing:` 섹션은 `arda.utils.load_processing_config()`를
+통해 `main.py`와 `scripts/detect.py`·`trajectory.py`·`record.py`·
+`record_and_view.py`·`analyze_drops.py`가 공통으로 읽습니다 — 이 파일 한 곳만
+고치면 전부에 반영됩니다 (이전엔 각 스크립트 상단에 동일한 값이 중복 하드코딩돼
+있었습니다).
 
 | 섹션 | 항목 | 설명 | 기본값 |
 |------|------|------|--------|
-| processing | `min_snr` | 노이즈 포인트 제거용 최소 SNR (근거리일수록 낮게) | `8.0` |
-| processing | `roi.x / .y / .z` | 감지 대상으로 볼 관심 영역 범위 (m) | `[-1.5,1.5]` / `[0.3,2.5]` / `[-0.2,2.2]` |
-| processing | `min_abs_doppler` | 정적(비이동) 포인트 제거 임계값 — 낮출수록 느린 낙하도 포착 | `0.05` |
-| processing | `cluster_eps` | DBSCAN 클러스터링 반경 (m) — 근거리일수록 줄임 | `0.3` |
+| processing | `min_snr` | 노이즈 포인트 제거용 최소 SNR (근거리일수록 낮게) | `6.0` |
+| processing | `roi.x / .y / .z` | 감지 대상으로 볼 관심 영역 범위 (m) | `[-1.0,1.0]` / `[0.1,1.0]` / `[-0.8,0.8]` |
+| processing | `min_abs_doppler` | 정적(비이동) 포인트 제거 임계값 (main.py의 filter_stationary 전용) | `0.05` |
+| processing | `cluster_eps` | DBSCAN 클러스터링 반경 (m) — 근거리일수록 줄임 | `0.15` |
 | processing | `cluster_min_samples` | 클러스터로 인정할 최소 포인트 수 | `2` |
+| processing | `airborne_z` | 공중 판별 최소 높이 (m) — `select_target`/`choose_target`용 | `0.40` |
+| processing | `max_jump` | 직전 프레임 무게중심 대비 허용 최대 이동 거리 (m) — `choose_target`용 | `0.5` |
 | detection | `history_window` | 낙하 판정에 사용하는 프레임 이력 개수 (100ms × N) | `6` |
 
 실제 판정 임계값은 [`arda/detection/fall_detector.py`](arda/detection/fall_detector.py) 상단 상수로 관리됩니다.
 
 | 상수 | 설명 | 기본값 |
 |------|------|--------|
-| `PEAK_Z_THRESHOLD` | 공중에 있었다고 판별할 최소 높이 (m) | `0.40` |
+| `PEAK_Z_THRESHOLD` | 공중에 있었다고 판별할 최소 높이 (m) | `0.37` |
 | `PEAK_DROP_THRESHOLD` | 피크 대비 최소 하락폭 — 이 이상 떨어지면 낙하 확정 (m) | `0.35` |
-| `MIN_DESCENT_FRAMES` | 피크 이후 연속 하강해야 하는 최소 프레임 수 (100ms × N) | `5` |
+| `MIN_DESCENT_FRAMES` | 피크 이후 연속 하강해야 하는 최소 프레임 수 (100ms × N) | `2` |
 | `HISTORY_WINDOW` | 판정에 사용하는 프레임 이력 개수 | `10` |
+| `FREEFALL_MIN_FRAMES` | 경로 3: 자유낙하로 볼 최소 연속 유효 프레임 수 | `3` |
+| `FREEFALL_ACCEL_MIN` / `_MAX` | 경로 3: 자유낙하로 인정할 가속도 범위 (m/s², 중력 9.8 기준 여유) | `4.0` / `15.0` |
 
-> **주의**: `config/settings.yaml`은 현재 `main.py`가 전혀 읽지 않는 문서용 파일입니다. `detection:` 섹션(`height_drop_threshold`, `fall_doppler_threshold`, `z_velocity_threshold`)은 이전 버전 알고리즘 기준이라 현재 로직과도 맞지 않고, `processing:` 섹션(`roi`, `min_snr` 등)도 마찬가지로 실제로는 반영되지 않습니다. 값을 튜닝할 때는 `fall_detector.py` 상단 상수(판정 임계값) 또는 `arda/processing/pointcloud.py`의 `filter_roi`/`filter_snr` 기본 인자(ROI·SNR)를 직접 수정하세요.
+> **주의**: `detection:` 섹션(`height_drop_threshold`, `fall_doppler_threshold`,
+> `z_velocity_threshold`)은 여전히 이전 버전 알고리즘 기준으로 남아있는 문서용
+> 값이며, 코드에서 읽어오지 않고 현재 로직과도 맞지 않습니다. 판정 임계값을
+> 튜닝할 때는 `fall_detector.py` 상단 상수를 직접 수정하세요. (`history_window`만
+> 예외로, `detection.history_window`는 `FallDetector` 생성 시 인자로 넘길 수
+> 있으나 현재 어떤 진입점도 그렇게 연결해두진 않았습니다.)
 
 ## 스크립트 설명 (`scripts/`)
 

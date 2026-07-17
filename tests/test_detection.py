@@ -107,3 +107,29 @@ def test_choose_target_coasts_through_brief_gap_instead_of_jumping():
     # 유예 프레임을 넘기면 그제서야 전역 재탐색을 허용한다
     target = detector.choose_target([stationary_elsewhere], airborne_z=0.40)
     assert len(target) > 0
+
+
+def test_freefall_detected_regardless_of_starting_height():
+    # 경로 3: 피크가 PEAK_Z_THRESHOLD(0.37m)를 한참 밑도는 낮은 위치에서
+    # 처음 포착돼도, 최근 궤적이 중력 가속과 일치하는 자유낙하 패턴이면
+    # 낙하로 판정해야 한다 (narrow-ROI 테스트처럼 시작 위치가 낮거나
+    # 임의인 경우 대비).
+    g, dt = 9.8, 0.1
+    h0, v0 = 0.15, 0.5  # 피크(0.15m) 자체가 이미 임계값 미만
+    zs = [h0 - v0 * t - 0.5 * g * t * t for t in (i * dt for i in range(5))]
+    assert max(zs) < 0.37  # 이 시나리오가 실제로 기존 피크 기준을 못 넘는지 확인
+
+    detector = FallDetector(history_window=10)
+    fell = False
+    for z in zs:
+        fell = detector.update(_make_pc(z=z, doppler=-0.5))
+    assert fell
+
+
+def test_no_fall_on_constant_velocity_descent():
+    # 등속(가속 없는) 하강은 자유낙하가 아니므로 경로 3이 반응하면 안 된다.
+    detector = FallDetector(history_window=10)
+    fell = False
+    for z in [0.20, 0.15, 0.10, 0.05, 0.00, -0.05]:
+        fell = detector.update(_make_pc(z=z, doppler=-0.2))
+    assert not fell

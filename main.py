@@ -3,24 +3,17 @@
 import argparse
 from pathlib import Path
 
-import yaml
-
 from arda.radar import IWR6843Sensor
 from arda.processing import PointCloud, cluster_points
 from arda.processing.filters import filter_stationary
 from arda.detection import FallDetector
 from arda.visualization import RealtimePlotter
-from arda.utils import CoordSender, get_logger, to_site_coords
+from arda.utils import CoordSender, get_logger, load_processing_config, load_settings, to_site_coords
 
 logger = get_logger(__name__)
 
 DEFAULT_CONFIG = Path("config/profiles/xwr68xx_AOP_profile_2026_06_28T01_40_17_736.cfg")
 DEFAULT_SETTINGS = Path("config/settings.yaml")
-
-
-def load_settings(path: Path) -> dict:
-    with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,6 +35,8 @@ def main() -> None:
     site_cfg = settings.get("site", {})
     site_origin = [site_cfg.get("x", 0.0), site_cfg.get("y", 0.0), site_cfg.get("z", 0.0)]
 
+    cfg = load_processing_config(Path(args.settings))
+
     sensor = IWR6843Sensor(args.cli_port, args.data_port)
     sensor.configure(args.config)
 
@@ -60,10 +55,11 @@ def main() -> None:
                     continue
 
                 pc = PointCloud(frame["points"])
-                pc = pc.filter_snr(min_snr=8.0).filter_roi()
-                pc = filter_stationary(pc)
+                pc = (pc.filter_snr(min_snr=cfg["min_snr"])
+                        .filter_roi(x_range=cfg["roi_x"], y_range=cfg["roi_y"], z_range=cfg["roi_z"]))
+                pc = filter_stationary(pc, min_abs_doppler=cfg["min_abs_doppler"])
 
-                clusters = cluster_points(pc)
+                clusters = cluster_points(pc, eps=cfg["cluster_eps"], min_samples=cfg["cluster_min_samples"])
                 target = max(clusters, key=len) if clusters else pc
 
                 fell = detector.update(target)

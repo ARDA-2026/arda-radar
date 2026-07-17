@@ -19,27 +19,22 @@ from arda.radar import IWR6843Sensor
 from arda.processing.pointcloud import PointCloud
 from arda.processing.clustering import cluster_points
 from arda.detection import FallDetector
-from arda.utils import get_logger
+from arda.utils import get_logger, load_processing_config
 
 logger = get_logger(__name__)
 
 DEFAULT_CONFIG = "config/profiles/xwr68xx_AOP_profile_short_range.cfg"
 
-# 포인트 필터 설정
-MIN_SNR         = 6.0  # 작은 물체의 약한 반사도 포착
-CLUSTER_EPS     = 0.15 # m — 10cm 물체 기준: 포인트 간 최대 거리 (물체 크기 + 측정 오차)
-CLUSTER_MINSAMP = 2    # 단일 노이즈 포인트 제거, 10cm 물체는 보통 2개 이상 반환
-
-# ROI Z축 범위 (1m): 센서 기준 -0.2 ~ 0.8m
-Z_RANGE = (-0.8, 0.8)
-
-# 공중 물체 판별 기준 — fall_detector.py의 PEAK_Z_THRESHOLD와 동일
-# 실험 데이터: 실제 낙하 시 Z 0.57~0.69m, 노이즈 최대 0.36m
-AIRBORNE_Z = 0.40
-
-# 근접 게이팅: 직전 프레임 무게중심 대비 허용 최대 이동 거리 (m)
-# 노이즈 클러스터로 타겟이 튀는 것을 방지 (100ms 프레임 기준 낙하 최대 속도보다 넉넉히)
-MAX_JUMP = 0.5
+# 포인트 필터·타겟 선택 튜닝값 — config/settings.yaml의 processing: 섹션에서 읽어온다.
+_cfg = load_processing_config()
+MIN_SNR         = _cfg["min_snr"]
+CLUSTER_EPS     = _cfg["cluster_eps"]
+CLUSTER_MINSAMP = _cfg["cluster_min_samples"]
+ROI_X           = _cfg["roi_x"]
+ROI_Y           = _cfg["roi_y"]
+Z_RANGE         = _cfg["roi_z"]
+AIRBORNE_Z      = _cfg["airborne_z"]
+MAX_JUMP        = _cfg["max_jump"]
 
 
 def parse_args():
@@ -79,7 +74,7 @@ def main():
                 # 1) 필터링
                 pc = (PointCloud(frame.get("points", []))
                       .filter_snr(MIN_SNR)
-                      .filter_roi(z_range=Z_RANGE))
+                      .filter_roi(x_range=ROI_X, y_range=ROI_Y, z_range=Z_RANGE))
 
                 # 2) DBSCAN 클러스터링
                 clusters = cluster_points(pc, eps=CLUSTER_EPS,

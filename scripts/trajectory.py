@@ -33,19 +33,22 @@ from arda.radar import IWR6843Sensor
 from arda.processing.pointcloud import PointCloud
 from arda.processing.clustering import cluster_points
 from arda.detection import FallDetector
-from arda.utils import get_logger
+from arda.utils import get_logger, load_processing_config
 
 logger = get_logger(__name__)
 
 DEFAULT_CONFIG = "config/profiles/xwr68xx_AOP_profile_short_range.cfg"
 
-# detect.py와 동일한 파라미터
-MIN_SNR         = 6.0
-CLUSTER_EPS     = 0.15
-CLUSTER_MINSAMP = 2
-Z_RANGE         = (-0.8, 0.8)
-AIRBORNE_Z      = 0.40  # 공중 물체 판별 기준 (fall_detector.PEAK_Z_THRESHOLD와 동일)
-MAX_JUMP        = 0.5   # m — 직전 프레임 무게중심 대비 허용 최대 이동 거리 (노이즈 튐 방지)
+# detect.py와 동일하게 config/settings.yaml의 processing: 섹션에서 읽어온다.
+_cfg = load_processing_config()
+MIN_SNR         = _cfg["min_snr"]
+CLUSTER_EPS     = _cfg["cluster_eps"]
+CLUSTER_MINSAMP = _cfg["cluster_min_samples"]
+ROI_X           = _cfg["roi_x"]
+ROI_Y           = _cfg["roi_y"]
+Z_RANGE         = _cfg["roi_z"]
+AIRBORNE_Z      = _cfg["airborne_z"]
+MAX_JUMP        = _cfg["max_jump"]
 
 TRAIL_LEN = 80
 
@@ -100,7 +103,7 @@ class FallTrajectoryPlotter:
         self.ax_side.set_title("Side View  (Y - Z)")
         self.ax_side.set_xlabel("Y (m)  distance from sensor")
         self.ax_side.set_ylabel("Z (m)  height")
-        self.ax_side.set_xlim(0.3, 2.5)
+        self.ax_side.set_xlim(ROI_Y[0], ROI_Y[1])
         self.ax_side.set_ylim(Z_RANGE[0] - 0.05, Z_RANGE[1] + 0.05)
         self.ax_side.set_aspect("equal")
         self.ax_side.grid(True, alpha=0.3)
@@ -192,7 +195,7 @@ class FallTrajectoryPlotter:
         # ── detect.py와 동일한 파이프라인 ────────────────────────
         pc_all = (PointCloud(frame.get("points", []))
                   .filter_snr(MIN_SNR)
-                  .filter_roi(z_range=Z_RANGE))
+                  .filter_roi(x_range=ROI_X, y_range=ROI_Y, z_range=Z_RANGE))
 
         clusters = cluster_points(pc_all, eps=CLUSTER_EPS, min_samples=CLUSTER_MINSAMP)
         target   = self._detector.choose_target(clusters, airborne_z=AIRBORNE_Z,
