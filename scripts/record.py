@@ -36,7 +36,6 @@ CLUSTER_MINSAMP = _cfg["cluster_min_samples"]
 ROI_X           = _cfg["roi_x"]
 ROI_Y           = _cfg["roi_y"]
 Z_RANGE         = _cfg["roi_z"]
-AIRBORNE_Z      = _cfg["airborne_z"]
 MAX_JUMP        = _cfg["max_jump"]
 
 
@@ -61,7 +60,7 @@ def main():
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     sensor   = IWR6843Sensor(args.cli_port, args.data_port)
-    detector = FallDetector(debug=False)
+    detector = FallDetector(debug=False, max_jump=MAX_JUMP)
 
     sensor.configure(args.config)
 
@@ -94,10 +93,12 @@ def main():
                             .filter_roi(x_range=ROI_X, y_range=ROI_Y, z_range=Z_RANGE))
                 clusters = cluster_points(pc_all, eps=CLUSTER_EPS,
                                           min_samples=CLUSTER_MINSAMP)
-                target   = detector.choose_target(clusters, airborne_z=AIRBORNE_Z, max_jump=MAX_JUMP)
 
-                is_falling = detector.update(target)
-                centroid   = target.centroid()
+                is_falling = detector.update(clusters)
+                primary    = detector.primary_track
+                target     = (primary.last_cluster if primary is not None and primary.last_cluster is not None
+                              else PointCloud([]))
+                centroid   = primary.last_centroid if primary is not None else None
                 z_vel      = detector.z_velocity()
 
                 # 진행 표시

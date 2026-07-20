@@ -22,7 +22,7 @@ def load_processing_config(path: Path | str = DEFAULT_SETTINGS_PATH) -> dict:
     """processing: 섹션을 읽어온다. 없는 키는 기존 기본값으로 채운다.
 
     반환 키: min_snr, roi_x, roi_y, roi_z, min_abs_doppler,
-             cluster_eps, cluster_min_samples, airborne_z, max_jump
+             cluster_eps, cluster_min_samples, max_jump
     """
     proc = load_settings(path).get("processing", {})
     roi  = proc.get("roi", {})
@@ -34,6 +34,5 @@ def load_processing_config(path: Path | str = DEFAULT_SETTINGS_PATH) -> dict:
         "min_abs_doppler":     proc.get("min_abs_doppler", 0.1),
         "cluster_eps":         proc.get("cluster_eps", 0.5),
         "cluster_min_samples": proc.get("cluster_min_samples", 3),
-        "airborne_z":          proc.get("airborne_z", 0.40),
         "max_jump":            proc.get("max_jump", 0.5),
     }

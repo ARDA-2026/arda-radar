@@ -47,7 +47,6 @@ CLUSTER_MINSAMP = _cfg["cluster_min_samples"]
 ROI_X           = _cfg["roi_x"]
 ROI_Y           = _cfg["roi_y"]
 Z_RANGE         = _cfg["roi_z"]
-AIRBORNE_Z      = _cfg["airborne_z"]
 MAX_JUMP        = _cfg["max_jump"]
 
 TRAIL_LEN = 80
@@ -91,7 +90,7 @@ class FallTrajectoryPlotter:
     def __init__(self, debug: bool = False):
         self._trail: deque[tuple[float, float, bool]] = deque(maxlen=TRAIL_LEN)
         self._frame_num = 0
-        self._detector = FallDetector(debug=debug)
+        self._detector = FallDetector(debug=debug, max_jump=MAX_JUMP)
         self._paused = False
         self._prev_falling = False
 
@@ -198,11 +197,12 @@ class FallTrajectoryPlotter:
                   .filter_roi(x_range=ROI_X, y_range=ROI_Y, z_range=Z_RANGE))
 
         clusters = cluster_points(pc_all, eps=CLUSTER_EPS, min_samples=CLUSTER_MINSAMP)
-        target   = self._detector.choose_target(clusters, airborne_z=AIRBORNE_Z,
-                                                max_jump=MAX_JUMP)
 
-        is_falling = self._detector.update(target)
-        centroid   = target.centroid()
+        is_falling = self._detector.update(clusters)
+        primary    = self._detector.primary_track
+        target     = primary.last_cluster if primary is not None and primary.last_cluster is not None \
+                     else PointCloud([])
+        centroid   = primary.last_centroid if primary is not None else None
 
         if centroid is not None:
             self._trail.append((centroid[1], centroid[2], is_falling))

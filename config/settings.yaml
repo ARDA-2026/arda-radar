@@ -11,13 +11,12 @@ processing:
   min_snr: 6.0           # 작은 물체의 약한 반사도 포착
   roi:
     x: [-1.0, 1.0]      # 좌우 ±1.0m
-    y: [0.2, 1.5]       # 센서 전방 0.2~1.5m
-    z: [-1.2, 0.6]      # 바닥 근처~선 키
+    y: [0.0, 1.5]       # 센서 전방 0.0~1.5m
+    z: [-0.8, 0.8]      # 바닥 근처~선 키
   min_abs_doppler: 0.05  # 느린 낙하 포인트도 포착 (main.py의 filter_stationary 전용)
   cluster_eps: 0.15      # m — 10cm 물체 기준: 포인트 간 최대 거리 (물체 크기 + 측정 오차)
   cluster_min_samples: 2 # 단일 노이즈 포인트 제거, 10cm 물체는 보통 2개 이상 반환
-  airborne_z: 0.00       # m — 공중 판별 최소 높이 (select_target/choose_target)
-  max_jump: 0.5          # m — 직전 프레임 무게중심 대비 허용 최대 이동 거리 (choose_target)
+  max_jump: 0.5          # m — 트랙 예측 위치 기준 클러스터 매칭 허용 거리 (다중 추적)
 
 detection:
   history_window: 6

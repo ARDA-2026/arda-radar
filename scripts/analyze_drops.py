@@ -1,7 +1,7 @@
 """녹화된 낙하 데이터 여러 개를 일괄 재생·비교 분석하는 스크립트.
 
 record.py로 녹화한 JSON 파일들(같은 물체를 여러 번 떨어뜨린 녹화)을 모아
-'현재' 파이프라인(SNR/ROI 필터 → DBSCAN → choose_target → FallDetector)으로
+'현재' 파이프라인(SNR/ROI 필터 → DBSCAN → FallDetector 다중 추적)으로
 다시 돌려, 시행별 궤적·판정 결과를 하나의 그래프로 비교하고 요약 통계를
 출력한다. record.py가 녹화 당시 저장해둔 is_falling 값에 의존하지 않고
 원시 포인트(points)를 다시 재생하므로, 이후 알고리즘을 바꿔도 같은
@@ -45,21 +45,51 @@ CLUSTER_MINSAMP = _cfg["cluster_min_samples"]
 ROI_X           = _cfg["roi_x"]
 ROI_Y           = _cfg["roi_y"]
 Z_RANGE         = _cfg["roi_z"]
-AIRBORNE_Z      = _cfg["airborne_z"]
 MAX_JUMP        = _cfg["max_jump"]
 
 TRIAL_COLORS = ["#e74c3c", "#3498db", "#2ecc71", "#9b59b6", "#f39c12"]
+
+
+def _primary_track_id(track_frames: list[list[dict]]) -> int | None:
+    """전체 프레임에 걸친 대표 트랙 ID — 낙하로 확정된 트랙이 있으면 그것을,
+    없으면 가장 많은 프레임 동안 관측된(가장 안정적으로 추적된) 트랙을 쓴다.
+    요약 통계·진단은 이 트랙 하나의 궤적을 기준으로 계산한다.
+    """
+    fallen_ids = {tr["id"] for frame in track_frames for tr in frame if tr["fell"]}
+    if fallen_ids:
+        return min(fallen_ids)
+    counts: dict[int, int] = {}
+    for frame in track_frames:
+        for tr in frame:
+            counts[tr["id"]] = counts.get(tr["id"], 0) + 1
+    return max(counts, key=counts.get) if counts else None
+
+
+def _track_z(frame: list[dict], track_id: int | None, key: str = "z") -> float | None:
+    if track_id is None:
+        return None
+    for tr in frame:
+        if tr["id"] == track_id:
+            return tr[key]
+    return None
 
 
 def replay(path: Path, near_y_max: float | None = None,
            min_doppler_mag: float | None = None) -> dict:
     """녹화 파일 하나를 현재 파이프라인으로 재생해 궤적/판정 결과를 반환한다.
 
-    near_y_max가 주어지면, 타겟 선택(choose_target) 직전에 그보다 먼
-    클러스터를 후보에서 제외한다 — 사람처럼 항상 더 먼 거리(Y)에서
-    움직이는 물체가 근처에 같이 있을 때, 그 사람을 근본적으로 후보군에서
-    배제하기 위한 것이다(단순 Z/도플러 기준보다 거리 기준이 훨씬 안정적
-    으로 구분되는 경우가 있음 — data/raw/person_plus_drop_20260715 참고).
+    다중 추적: 매 프레임 클러스터들을 FallDetector에 통째로 넘기면,
+    클러스터마다 독립 트랙으로 추적되며 트랙별로 낙하 여부가 판정된다.
+    이 함수는 그중 "대표 트랙"(_primary_track_id — 낙하 확정된 트랙이
+    있으면 그것, 없으면 가장 오래 추적된 트랙) 하나의 Z 궤적을 요약·진단용
+    으로 뽑아 반환하되, fall_events(감지 시점)는 어느 트랙이 낙하로
+    판정됐든 전부 포함한다 — "이 배치가 낙하를 감지했는가"라는 재검증
+    목적에는 특정 트랙이 아니라 전체 판정 여부가 중요하기 때문이다.
+
+    near_y_max가 주어지면, DBSCAN 클러스터 중 그보다 먼 것을 애초에
+    후보에서 제외한다 — 사람처럼 항상 더 먼 거리(Y)에서 움직이는 물체가
+    근처에 같이 있을 때, 그 사람을 근본적으로 후보군에서 배제하기 위한
+    것이다(data/raw/person_plus_drop_20260715 참고).
 
     min_doppler_mag가 주어지면, |도플러|가 그보다 작은(=거의 정지한)
     클러스터를 후보에서 제외한다 — 사람이 물체 바로 옆(비슷한 거리)에
@@ -67,16 +97,17 @@ def replay(path: Path, near_y_max: float | None = None,
     0에 가깝고 낙하 물체는 훨씬 크다는 점으로 구분한다
     (data/raw/person_close_drop_20260715 참고).
 
-    두 필터 모두 시각화(all_pts_z/cluster_pts_z)에는 영향을 주지 않고
+    두 필터 모두 시각화(all_pts_z/track_pts_z)에는 영향을 주지 않고
     원본 그대로 보여준다 — 무엇이 걸러졌는지 비교할 수 있게.
     """
     data = json.load(path.open())
-    detector = FallDetector()
+    detector = FallDetector(max_jump=MAX_JUMP)
 
-    ts, zs, falling = [], [], []
+    ts = []
     fall_events = []
     all_pts_z    = []   # 프레임별 SNR/ROI 필터 통과 포인트의 Z 배열 (회색 산점도용)
-    cluster_pts_z = []  # 프레임별 [클러스터별 Z 배열] (색상 산점도용)
+    track_pts_z  = []   # 프레임별 [(track_id, Z 배열)] — 트랙 ID로 색 고정한 산점도용
+    track_frames = []   # 프레임별 [{id, z, fell}] — 요약/진단용
 
     for fr in data["frames"]:
         pc = (PointCloud(fr["points"])
@@ -91,24 +122,34 @@ def replay(path: Path, near_y_max: float | None = None,
             candidates = [c for c in candidates
                           if abs(float(np.mean(c.doppler))) >= min_doppler_mag]
 
-        target = detector.choose_target(candidates, airborne_z=AIRBORNE_Z, max_jump=MAX_JUMP)
-        fell = detector.update(target)
+        fell = detector.update(candidates)
 
-        # 이번 프레임에 실제 관측이 있었을 때만 z를 기록한다 — last_centroid는
-        # 코스팅(예측만) 구간에도 마지막 값을 그대로 들고 있어 값을 그대로
-        # 쓰면 "관측 없음"과 "정지 상태"를 구분할 수 없다.
-        z = float(target.centroid()[2]) if len(target) > 0 else None
         ts.append(fr["t"])
-        zs.append(z)
-        falling.append(fell)
         if fell:
             fall_events.append(fr["t"])
 
-        all_pts_z.append(pc.xyz[:, 2] if len(pc) > 0 else np.empty(0))
-        cluster_pts_z.append([c.xyz[:, 2] for c in clusters])
+        matched = [t for t in detector.tracks
+                   if t.last_cluster is not None and len(t.last_cluster) > 0
+                   and t.last_centroid is not None]
+        track_frames.append([
+            {"id": t.id, "z": float(t.last_centroid[2]),
+             "raw_z": float(t.last_cluster.centroid()[2]), "fell": t.fell}
+            for t in matched
+        ])
+        track_pts_z.append([(t.id, t.last_cluster.xyz[:, 2]) for t in matched])
 
-    return {"name": path.stem, "ts": ts, "zs": zs, "falling": falling, "fall_events": fall_events,
-            "all_pts_z": all_pts_z, "cluster_pts_z": cluster_pts_z}
+        all_pts_z.append(pc.xyz[:, 2] if len(pc) > 0 else np.empty(0))
+
+    primary_id = _primary_track_id(track_frames)
+    # zs: 칼만 평활화된 높이(경로 1/2 피크-하강 판정과 같은 기준).
+    # raw_zs: 원시 관측 높이(경로 3 자유낙하 판정과 같은 기준) — Track이
+    # 내부적으로 _height_history/_raw_height_history를 나눠 쓰는 이유와
+    # 동일하다 (fall_detector.py Track 클래스 docstring 참고).
+    zs     = [_track_z(frame, primary_id, "z") for frame in track_frames]
+    raw_zs = [_track_z(frame, primary_id, "raw_z") for frame in track_frames]
+
+    return {"name": path.stem, "ts": ts, "zs": zs, "raw_zs": raw_zs, "fall_events": fall_events,
+            "all_pts_z": all_pts_z, "track_pts_z": track_pts_z, "track_frames": track_frames}
 
 
 def summarize(result: dict) -> dict:
@@ -157,6 +198,10 @@ def _diagnose_freefall(valid: list[tuple[int, float]]) -> str:
         return f"유효 프레임 {len(valid)}개 < {FREEFALL_MIN_FRAMES}개(자유낙하 판정 최소치)"
 
     recent = valid[-FREEFALL_MIN_FRAMES:]
+
+    if recent[-1][1] >= recent[0][1]:
+        return "창 전체로 순하강이 아님(마지막 높이 >= 첫 높이)"
+
     velocities, midpoints = [], []
     for (i0, z0), (i1, z1) in zip(recent, recent[1:]):
         dt = (i1 - i0) * FRAME_DT
@@ -179,16 +224,18 @@ def _diagnose_freefall(valid: list[tuple[int, float]]) -> str:
 def diagnose(result: dict) -> str:
     """미감지 사유를 경로 1/2(피크-하강)·경로 3(자유낙하) 둘 다 근사 진단한다.
 
-    실제 FallDetector는 칼만 평활화된 위치로 판정하므로 여기(원시 target
-    centroid 기준)와 미세하게 다를 수 있지만, 어느 게이트에서 막혔는지
-    가늠하는 데는 충분하다.
+    실제 Track과 동일하게, 피크-하강은 칼만 평활화된 높이(zs)를, 자유낙하는
+    원시 관측 높이(raw_zs)를 각각 써서 실제 판정 로직과 최대한 가깝게
+    맞춘다 — 대표 트랙 하나 기준이므로 다른 트랙에서 판정됐다면 미세하게
+    다를 수 있지만, 어느 게이트에서 막혔는지 가늠하는 데는 충분하다.
     """
-    valid = [(i, z) for i, z in enumerate(result["zs"]) if z is not None]
+    valid     = [(i, z) for i, z in enumerate(result["zs"]) if z is not None]
+    raw_valid = [(i, z) for i, z in enumerate(result["raw_zs"]) if z is not None]
     if len(valid) < 2:
         return "유효 관측 2프레임 미만"
 
     peak_drop_reason = _diagnose_peak_drop(valid)
-    freefall_reason   = _diagnose_freefall(valid)
+    freefall_reason   = _diagnose_freefall(raw_valid)
 
     if not peak_drop_reason or not freefall_reason:
         return "조건 충족 (다른 원인으로 미감지 — 코드 직접 확인 필요)"
@@ -197,12 +244,16 @@ def diagnose(result: dict) -> str:
 
 
 def plot_points_clusters(results: list[dict], folder: Path) -> Path:
-    """시행별로 시간에 따른 전체 포인트·DBSCAN 클러스터·타겟 궤적을 그린다.
+    """시행별로 시간에 따른 전체 포인트·트랙 궤적을 그린다.
 
-    record_and_view.py의 "Z over time (gray=pts / color=cluster / orange=target)"
-    패널을 여러 녹화 파일에 대해 재생 결과로 재현한 것 — 최종 타겟 Z(t) 하나만
-    보여주는 analysis.png와 달리, 매 프레임 DBSCAN이 실제로 무엇을 봤는지(회색
-    전체 포인트, 색상별 클러스터)까지 그대로 보여준다.
+    record_and_view.py의 "Z over time (gray=pts / color=track id)" 패널을
+    여러 녹화 파일에 대해 재생 결과로 재현한 것 — 대표 트랙 Z(t) 하나만
+    보여주는 analysis.png와 달리, 매 프레임 각 트랙이 실제로 무엇을 물고
+    있었는지(회색 전체 포인트, 트랙 ID로 고정된 색상)까지 그대로 보여준다.
+    색이 트랙 ID에 고정돼 있어, 궤적이 중간에 다른 색으로 바뀌면 트랙이
+    엉뚱한 클러스터로 갈아탄(하이재킹) 게 아니라 아예 다른 트랙으로
+    넘어갔다는 뜻 — data/reference/wrongChoice.png 같은 문제를 한눈에
+    확인할 수 있다.
     """
     n = len(results)
     fig, axes = plt.subplots(n, 1, figsize=(14, 3.0 * n), sharex=False)
@@ -214,22 +265,22 @@ def plot_points_clusters(results: list[dict], folder: Path) -> Path:
             if len(pz):
                 ax.scatter(np.full(len(pz), t), pz, c="lightgray", s=10, alpha=0.5, zorder=2)
 
-        for t, clist in zip(r["ts"], r["cluster_pts_z"]):
-            for ci, cz in enumerate(clist):
-                if len(cz):
-                    ax.scatter(np.full(len(cz), t), cz,
-                               c=TRIAL_COLORS[ci % len(TRIAL_COLORS)], s=18, alpha=0.8, zorder=3)
+        for t, pairs in zip(r["ts"], r["track_pts_z"]):
+            for tid, tz in pairs:
+                if len(tz):
+                    ax.scatter(np.full(len(tz), t), tz,
+                               c=TRIAL_COLORS[tid % len(TRIAL_COLORS)], s=18, alpha=0.8, zorder=3)
 
         valid_t = [t for t, z in zip(r["ts"], r["zs"]) if z is not None]
         valid_z = [z for z in r["zs"] if z is not None]
-        ax.plot(valid_t, valid_z, "o-", color="orange", lw=1.5, ms=5, zorder=4, label="target")
+        ax.plot(valid_t, valid_z, "o-", color="orange", lw=1.5, ms=5, zorder=4, label="대표 트랙")
 
         for ft in r["fall_events"]:
             ax.axvline(ft, color="red", ls="--", alpha=0.6)
 
         ax.axhline(0, color="brown", ls="--", lw=1, alpha=0.5)
         ax.axhline(PEAK_Z_THRESHOLD, color="gray", ls=":", lw=1, alpha=0.5)
-        ax.set_title(f"{r['name']}  (회색=전체 포인트 / 색상=클러스터 / 주황=타겟, 빨간 점선=낙하 판정)",
+        ax.set_title(f"{r['name']}  (회색=전체 포인트 / 색상=트랙 ID / 주황=대표 트랙, 빨간 점선=낙하 판정)",
                      fontsize=9)
         ax.set_ylabel("Z (m)")
         ax.set_ylim(-0.9, 0.9)
@@ -282,9 +333,10 @@ def main():
         summaries.append(s)
 
     ax_z.axhline(0, color="brown", ls="--", lw=1, alpha=0.5, label="floor")
-    ax_z.axhline(0.37, color="gray", ls=":", lw=1, alpha=0.6, label="airborne(0.37m)")
+    ax_z.axhline(PEAK_Z_THRESHOLD, color="gray", ls=":", lw=1, alpha=0.6,
+                 label=f"peak threshold({PEAK_Z_THRESHOLD}m)")
     ax_z.set_xlabel("Time (s)")
-    ax_z.set_ylabel("Filtered target Z (m)")
+    ax_z.set_ylabel("Primary track Z (m)")
     ax_z.set_title("시행별 Z(t) 궤적 (점선 = 낙하 판정 시점)")
     ax_z.legend(fontsize=8)
     ax_z.grid(alpha=0.3)

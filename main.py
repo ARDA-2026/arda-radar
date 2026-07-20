@@ -40,7 +40,7 @@ def main() -> None:
     sensor = IWR6843Sensor(args.cli_port, args.data_port)
     sensor.configure(args.config)
 
-    detector = FallDetector()
+    detector = FallDetector(max_jump=cfg["max_jump"])
     plotter = RealtimePlotter() if not args.no_viz else None
     sender = None if args.no_servo_out else CoordSender(args.servo_host, args.servo_port)
     if sender:
@@ -60,24 +60,24 @@ def main() -> None:
                 pc = filter_stationary(pc, min_abs_doppler=cfg["min_abs_doppler"])
 
                 clusters = cluster_points(pc, eps=cfg["cluster_eps"], min_samples=cfg["cluster_min_samples"])
-                target = max(clusters, key=len) if clusters else pc
 
-                fell = detector.update(target)
+                fell = detector.update(clusters)
 
                 if sender and detector.last_centroid is not None:
                     sender.send(detector.last_centroid, fall=fell)
 
-                if fell and detector.last_centroid is not None:
+                if fell and detector.last_fall_centroid is not None:
                     # 확정 시점의 실측 Z는 바닥 접촉 높이가 아니므로(피크 대비
                     # 일정량만 하강한 순간일 뿐) 사용하지 않는다. X,Y만
                     # 실측값을 site_origin으로 변환하고, Z는 site.z가 "바닥
                     # 기준 센서 설치 높이"로 정의되어 있으므로 항상 바닥(0)이다.
-                    x, y, _ = detector.last_centroid
+                    x, y, _ = detector.last_fall_centroid
                     site_x, site_y, _ = to_site_coords([x, y, 0.0], site_origin)
                     logger.warning("낙하 위치(설치 좌표계) X=%.2f Y=%.2f Z=0.00(바닥)", site_x, site_y)
 
-                if plotter and len(target) > 0:
-                    plotter.update(target.xyz, fall_detected=fell)
+                primary = detector.primary_track
+                if plotter and primary is not None and primary.last_cluster is not None:
+                    plotter.update(primary.last_cluster.xyz, fall_detected=fell)
 
     except KeyboardInterrupt:
         logger.info("사용자 중단")

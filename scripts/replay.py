@@ -31,14 +31,14 @@ def main() -> None:
             pc = PointCloud(frame["points"]).filter_snr().filter_roi()
             pc = filter_stationary(pc)
             clusters = cluster_points(pc)
-            target = max(clusters, key=len) if clusters else pc
 
-            fell = detector.update(target)
+            fell = detector.update(clusters)
             if fell:
                 fall_count += 1
 
-            if plotter and len(target) > 0:
-                plotter.update(target.xyz, fall_detected=fell)
+            primary = detector.primary_track
+            if plotter and primary is not None and primary.last_cluster is not None:
+                plotter.update(primary.last_cluster.xyz, fall_detected=fell)
 
             time.sleep(0.1 / args.speed)
 

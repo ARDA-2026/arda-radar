@@ -1,8 +1,8 @@
-"""낙하 감지 전용 스크립트 — DBSCAN 클러스터링으로 특정 물체 추적.
+"""낙하 감지 전용 스크립트 — DBSCAN 클러스터링 + 다중 추적.
 
 파이프라인:
     RAW 포인트 → SNR 필터 → ROI 필터 → DBSCAN 클러스터링
-    → 가장 큰 클러스터(= 추적 물체) → FallDetector
+    → 클러스터마다 독립 트랙으로 추적(FallDetector) → 트랙별 낙하 판정
 
 실행:
     uv run scripts/detect.py
@@ -33,7 +33,6 @@ CLUSTER_MINSAMP = _cfg["cluster_min_samples"]
 ROI_X           = _cfg["roi_x"]
 ROI_Y           = _cfg["roi_y"]
 Z_RANGE         = _cfg["roi_z"]
-AIRBORNE_Z      = _cfg["airborne_z"]
 MAX_JUMP        = _cfg["max_jump"]
 
 
@@ -51,7 +50,7 @@ def main():
     args = parse_args()
 
     sensor   = IWR6843Sensor(args.cli_port, args.data_port)
-    detector = FallDetector(debug=args.debug)
+    detector = FallDetector(debug=args.debug, max_jump=MAX_JUMP)
 
     sensor.configure(args.config)
 
@@ -80,26 +79,23 @@ def main():
                 clusters = cluster_points(pc, eps=CLUSTER_EPS,
                                           min_samples=CLUSTER_MINSAMP)
 
-                # 3) 추적 대상 선택 (이동 물체 우선 + 근접 게이팅 + 재포착 유예)
-                target = detector.choose_target(clusters, airborne_z=AIRBORNE_Z,
-                                                max_jump=MAX_JUMP)
+                # 3) 클러스터마다 독립 트랙으로 추적하며 낙하 판정 (다중 추적)
+                is_falling = detector.update(clusters)
 
-                # 4) 낙하 판정
-                is_falling = detector.update(target)
-
-                # 5) 디버그 출력 — 클러스터가 보일 때
+                # 4) 디버그 출력 — 클러스터가 보일 때
                 if args.debug and clusters:
-                    c = target.centroid()
+                    primary = detector.primary_track
                     z_vel = detector.z_velocity()
+                    z = primary.last_centroid[2] if primary is not None and primary.last_centroid is not None else float("nan")
                     print(
                         f"[CLUSTER] frame={fn}"
                         f"  clusters={len(clusters)}"
-                        f"  target_pts={len(target)}"
-                        f"  Z={c[2]:.2f}m  dZ/dt={z_vel:+.2f}m/s"
+                        f"  tracks={len(detector.tracks)}"
+                        f"  Z={z:.2f}m  dZ/dt={z_vel:+.2f}m/s"
                         + ("  *** FALLING ***" if is_falling else "")
                     )
 
-                # 6) 낙하 이벤트 출력
+                # 5) 낙하 이벤트 출력
                 if is_falling and fn - last_fall_frame > 3:
                     fall_count += 1
                     c = detector.last_fall_centroid   # 착지 소실 시에도 마지막 위치 사용
@@ -107,8 +103,7 @@ def main():
                            if c is not None else "X=?  Y=?")
                     print(
                         f"\n*** FALL #{fall_count:03d} ***  "
-                        f"frame={fn}  {pos}  "
-                        f"cluster_pts={len(target)}"
+                        f"frame={fn}  {pos}"
                     )
                     last_fall_frame = fn
 
