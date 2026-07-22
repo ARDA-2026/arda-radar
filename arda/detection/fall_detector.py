@@ -39,6 +39,20 @@ PEAK_Z_THRESHOLD   = 0.37  # m — 공중 판별 최소 높이 (노이즈 최대
 PEAK_DROP_THRESHOLD = 0.35  # m — 피크 대비 최소 하락폭 (낙하 확정)
 MIN_DESCENT_FRAMES  = 2     # 피크 이후 연속 하강 최소 프레임 수 (200ms)
 
+# 경로 1/2(피크-하강)는 원래 속도를 전혀 안 봤다 — "한 번 높이 찍혔다가
+# 충분히 떨어졌나"만 보므로, 봉지처럼 공기저항을 크게 받아 몇 초에 걸쳐
+# 천천히 내려오는 물체도 그대로 낙하로 판정돼버렸다(0.6m→0.05m를 1초에
+# 걸쳐 등속 0.55m/s로 내려가는 시나리오로 실제 재현 확인). 최종 목적이
+# 사람의 낙하(자유낙하에 준하게 빠름)를 감지하는 것이므로, 자유낙하가
+# 아닌 느린 하강까지 낙하로 잡으면 안 된다. 그래서 피크~마지막 프레임
+# 사이의 "평균" 하강 속도에 최소 기준을 둔다 — 경로 3처럼 프레임별
+# 가속도 모양(모노토닉·범위)까지 엄격히 보진 않아, 노이즈 낀 실제
+# 빠른 낙하에 대한 경로 1/2 본연의 관용성은 유지하면서 명백히 느린
+# 하강만 걸러낸다. 값은 자유낙하 최소 낙하폭(PEAK_DROP_THRESHOLD)을
+# 자유낙하로 낙하할 때의 평균속도(√(g·d/2) ≈ 1.3m/s, d=0.35m 기준)보다
+# 낮게 잡아 여유를 뒀다.
+MIN_AVG_DESCENT_SPEED = 1.0  # m/s — 피크~마지막 프레임 평균 하강 속도 최소 기준
+
 # 피크 대비 하락폭만 보면, 바닥을 찍고 다시 위로 올라가는 중(바운스,
 # 노이즈로 무게중심이 끌려 올라가는 경우 등)에도 "피크보다는 여전히
 # 낮다"는 이유로 낙하로 오판할 수 있다. 그래서 마지막 두 유효 프레임 사이
@@ -268,6 +282,8 @@ class Track:
         - 피크 이후 모든 값이 피크 이하 (반등 없음)
         - 마지막 두 유효 프레임 사이 궤적이 상승 중이 아님 (바운스/재상승 제외)
         - 마지막 유효 Z가 피크 대비 PEAK_DROP_THRESHOLD 이상 하락
+        - 피크~마지막 프레임 사이 평균 하강 속도가 MIN_AVG_DESCENT_SPEED 이상
+          (자유낙하가 아닌 느린 하강 배제 — MIN_AVG_DESCENT_SPEED 주석 참고)
         """
         peak_pos   = max(range(len(valid)), key=lambda k: valid[k][1])
         peak_z     = valid[peak_pos][1]
@@ -276,29 +292,36 @@ class Track:
         if peak_z < PEAK_Z_THRESHOLD:
             return False, ""
 
-        post_peak = [h for i, h in valid if i > peak_frame]
+        post_peak = [(i, h) for i, h in valid if i > peak_frame]
 
         if len(post_peak) < MIN_DESCENT_FRAMES:
             return False, ""
 
-        if any(h > peak_z for h in post_peak):
+        post_peak_heights = [h for _, h in post_peak]
+        if any(h > peak_z for h in post_peak_heights):
             return False, ""
 
         # 피크 대비 하락폭만으로는 "바닥 찍고 다시 올라가는 중"을 구분할 수
         # 없다 — 최근 궤적이 실제로 상승 중이면 낙하 후보에서 제외한다.
-        if len(post_peak) >= 2 and (post_peak[-1] - post_peak[-2]) > RISING_TOLERANCE:
+        if len(post_peak) >= 2 and (post_peak_heights[-1] - post_peak_heights[-2]) > RISING_TOLERANCE:
             return False, ""
 
-        last_z    = post_peak[-1]
+        last_frame, last_z = post_peak[-1]
         peak_drop = peak_z - last_z
 
-        if peak_drop >= PEAK_DROP_THRESHOLD:
-            reason = (f"peak={peak_z:.2f}m"
-                      f"  descent={len(post_peak)}f"
-                      f"  drop={peak_drop:.2f}m")
-            return True, reason
+        if peak_drop < PEAK_DROP_THRESHOLD:
+            return False, ""
 
-        return False, ""
+        elapsed = (last_frame - peak_frame) * FRAME_DT
+        avg_speed = peak_drop / elapsed if elapsed > 0 else float("inf")
+        if avg_speed < MIN_AVG_DESCENT_SPEED:
+            return False, ""
+
+        reason = (f"peak={peak_z:.2f}m"
+                  f"  descent={len(post_peak)}f"
+                  f"  drop={peak_drop:.2f}m"
+                  f"  avg_v={avg_speed:.2f}m/s")
+        return True, reason
 
     def _freefall_check(self, valid: list[tuple[int, float]]) -> tuple[bool, str]:
         """경로 3 — 시작 높이 무관, 최근 궤적이 자유낙하 패턴인지만 본다.

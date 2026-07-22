@@ -12,7 +12,7 @@ processing:
   roi:
     x: [-1.0, 1.0]      # 좌우 ±1.0m
     y: [0.0, 1.5]       # 센서 전방 0.0~1.5m
-    z: [-0.8, 0.8]      # 바닥 근처~선 키
+    z: [-0.7, 0.9]      # 바닥 근처~선 키
   min_abs_doppler: 0.05  # 느린 낙하 포인트도 포착 (main.py의 filter_stationary 전용)
   cluster_eps: 0.15      # m — 10cm 물체 기준: 포인트 간 최대 거리 (물체 크기 + 측정 오차)
   cluster_min_samples: 2 # 단일 노이즈 포인트 제거, 10cm 물체는 보통 2개 이상 반환
@@ -36,4 +36,4 @@ visualization:
 site:
   x: 0.0
   y: 0.0
-  z: 1.1
+  z: 0.8

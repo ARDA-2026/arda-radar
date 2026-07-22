@@ -32,7 +32,7 @@ from arda.processing.clustering import cluster_points
 from arda.detection import FallDetector
 from arda.detection.fall_detector import (
     PEAK_Z_THRESHOLD, PEAK_DROP_THRESHOLD, MIN_DESCENT_FRAMES, RISING_TOLERANCE,
-    FREEFALL_MIN_FRAMES, FREEFALL_ACCEL_MIN, FREEFALL_ACCEL_MAX, FRAME_DT,
+    MIN_AVG_DESCENT_SPEED, FREEFALL_MIN_FRAMES, FREEFALL_ACCEL_MIN, FREEFALL_ACCEL_MAX, FRAME_DT,
 )
 from arda.utils import load_processing_config
 
@@ -175,19 +175,26 @@ def _diagnose_peak_drop(valid: list[tuple[int, float]]) -> str:
     if peak_z < PEAK_Z_THRESHOLD:
         return f"피크({peak_z:.2f}m) < 임계값({PEAK_Z_THRESHOLD}m)"
 
-    post_peak = [z for i, z in valid if i > peak_frame]
+    post_peak = [(i, z) for i, z in valid if i > peak_frame]
     if len(post_peak) < MIN_DESCENT_FRAMES:
         return f"피크 이후 유효 프레임 {len(post_peak)}개 < {MIN_DESCENT_FRAMES}개"
 
-    if any(z > peak_z for z in post_peak):
+    post_peak_heights = [z for _, z in post_peak]
+    if any(z > peak_z for z in post_peak_heights):
         return "피크 이후 반등(피크 초과) 있음"
 
-    if len(post_peak) >= 2 and (post_peak[-1] - post_peak[-2]) > RISING_TOLERANCE:
+    if len(post_peak) >= 2 and (post_peak_heights[-1] - post_peak_heights[-2]) > RISING_TOLERANCE:
         return "마지막 구간이 상승 중"
 
-    drop = peak_z - post_peak[-1]
+    last_frame, last_z = post_peak[-1]
+    drop = peak_z - last_z
     if drop < PEAK_DROP_THRESHOLD:
         return f"하락폭({drop:.2f}m) < 임계값({PEAK_DROP_THRESHOLD}m)"
+
+    elapsed = (last_frame - peak_frame) * FRAME_DT
+    avg_speed = drop / elapsed if elapsed > 0 else float("inf")
+    if avg_speed < MIN_AVG_DESCENT_SPEED:
+        return f"평균 하강속도({avg_speed:.2f}m/s) < 최소기준({MIN_AVG_DESCENT_SPEED}m/s) — 자유낙하로 보기엔 느림"
 
     return ""  # 경로 1/2 조건 충족 — 미감지 사유 아님
 
