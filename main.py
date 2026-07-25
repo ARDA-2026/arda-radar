@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--thermal-port", type=int, default=9998, help="열화상 판정기 UDP 포트 (트리거 전송용)")
     parser.add_argument("--thermal-verdict-port", type=int, default=9997, help="열화상 판정 결과 수신 포트")
     parser.add_argument(
-        "--thermal-pending-timeout", type=float, default=6.0,
+        "--thermal-pending-timeout", type=float, default=10.0,
         help="열화상 판정 응답을 기다리는 최대 시간(초) — 이 시간 안에 회신이 없으면 보류 처리",
     )
     return parser.parse_args()
@@ -81,6 +81,11 @@ def main() -> None:
     # 새 낙하가 확정돼도 중복으로 트리거를 보내지 않는다(한 번에 하나만 판정).
     pending_site_xy = None
     pending_since = 0.0
+    # FallDetector.update()는 한 번 확정된 트랙에 대해 계속 True를 반환하므로
+    # (래치), 마지막으로 반응(서보 전송·로그·열화상 트리거)한 트랙 id를
+    # 기억해 "새로 확정된 낙하"일 때만 반응하고 같은 낙하가 계속 보고되는
+    # 동안은 반복하지 않는다.
+    last_reacted_track_id = None
 
     logger.info("ARDA 시작 — 낙하 감지 모니터링 중")
     try:
@@ -99,7 +104,13 @@ def main() -> None:
 
                 fell = detector.update(clusters)
 
-                if fell and detector.last_fall_centroid is not None:
+                if (
+                    fell
+                    and detector.last_fall_centroid is not None
+                    and detector.last_fall_track_id != last_reacted_track_id
+                ):
+                    last_reacted_track_id = detector.last_fall_track_id
+
                     # 서보는 fall=true 좌표만 반응하고(홈 대기 → 낙하 시 이동)
                     # 그 외 좌표는 전부 무시하므로, 매 프레임이 아니라 낙하가
                     # 확정된 이 순간에만 보낸다.

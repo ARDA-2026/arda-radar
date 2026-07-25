@@ -38,6 +38,29 @@ def test_fall_detected_on_height_drop():
     assert len(detector.tracks) == 1
 
 
+def test_last_fall_track_id_stays_same_while_same_track_keeps_reporting_fall():
+    """update()가 래치로 계속 True를 반환하는 동안, last_fall_track_id는
+    바뀌지 않아야 한다 — 호출부가 "같은 낙하가 계속 보고되는 중"을
+    구분해 반복 반응(서보 재전송 등)을 피할 수 있으려면 필요하다."""
+    detector = FallDetector(history_window=10)
+    for _ in range(3):
+        detector.update([_make_pc(z=1.5, doppler=0.0)])
+
+    g, dt, h0 = 9.8, 0.1, 1.5
+    for i in range(1, 5):
+        t = i * dt
+        z = h0 - 0.5 * g * t * t
+        detector.update([_make_pc(z=z, doppler=-1.2)])
+    assert detector.last_fall_track_id is not None
+    first_track_id = detector.last_fall_track_id
+
+    # 확정된 트랙이 계속 매칭되며 몇 프레임 더 보고돼도 id는 그대로여야 한다.
+    for _ in range(3):
+        fell = detector.update([_make_pc(z=0.0, doppler=-1.2)])
+        assert fell
+        assert detector.last_fall_track_id == first_track_id
+
+
 def test_reset_clears_state():
     detector = FallDetector(history_window=10)
     for _ in range(5):

@@ -440,6 +440,10 @@ class FallDetector:
     가속도 계산에는 오히려 실제 가속을 과소평가시키는 방향으로 편향된다.
 
     last_fall_centroid: 낙하로 확정된 트랙의, 확정 시점 무게중심(X, Y, Z).
+    last_fall_track_id: 그 낙하를 확정한 트랙의 id. update()는 한 번 확정된
+        트랙에 대해 계속 True를 반환하므로(래치), 호출부에서 "새로 확정된
+        낙하인지, 같은 낙하가 계속 보고되는 중인지"를 구분하려면 이 값이
+        이전 프레임과 달라졌는지 비교하면 된다.
     last_centroid: 현재 "주 트랙"(primary_track)의 최신 무게중심 — 매
         프레임 갱신되며, 서보 좌표 전송처럼 낙하 확정 여부와 무관하게
         연속적인 대표 위치가 필요한 호출부용 편의 속성이다.
@@ -458,6 +462,7 @@ class FallDetector:
         self._next_id = 1
 
         self.last_fall_centroid: np.ndarray | None = None
+        self.last_fall_track_id: int | None = None
 
     # ── 메인 업데이트 ────────────────────────────────────────────────────────
 
@@ -558,6 +563,7 @@ class FallDetector:
 
         if fall_track is not None:
             self.last_fall_centroid = fall_track.last_fall_centroid
+            self.last_fall_track_id = fall_track.id
 
         return fell
 
@@ -565,3 +571,4 @@ class FallDetector:
         self._tracks = []
         self._next_id = 1
         self.last_fall_centroid = None
+        self.last_fall_track_id = None
