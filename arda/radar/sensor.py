@@ -136,6 +136,20 @@ class IWR6843Sensor:
         self._data_serial = serial.Serial(self.data_port, DATA_BAUD, timeout=1)
         logger.info("Data port %s opened", self.data_port)
 
+    def stop(self) -> None:
+        """CLI 포트에 sensorStop을 전송해 스트리밍을 중단한다.
+
+        데이터 포트를 닫기 전에 반드시 호출해야 한다 — 포트를 먼저 닫으면
+        USB 버퍼가 포화 상태로 방치되어 센서 펌웨어가 블로킹 상태에 빠진다.
+        """
+        try:
+            with serial.Serial(self.cli_port, CLI_BAUD, timeout=0) as cli:
+                cli.write(b"sensorStop\n")
+                self._read_until_done(cli, timeout=0.5)
+            logger.info("sensorStop sent")
+        except Exception as e:
+            logger.warning("sensorStop on exit failed: %s", e)
+
     def close(self) -> None:
         if self._data_serial and self._data_serial.is_open:
             self._data_serial.close()
@@ -166,4 +180,5 @@ class IWR6843Sensor:
         return self
 
     def __exit__(self, *_):
+        self.stop()
         self.close()

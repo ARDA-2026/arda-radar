@@ -91,6 +91,11 @@ FRAME_DT       = 0.10       # 초 (100ms 프레임 주기)
 MAX_JUMP = 0.5             # m — 트랙 예측 위치 기준, 클러스터를 그 트랙으로 매칭할 최대 거리
 TRACK_MAX_MISSES = 5       # 프레임 — 이 이상 연속으로 매칭 안 되면 트랙 삭제 (500ms)
 
+# 트랙 분류 — 사람 vs 낙하 물체
+PERSON_Z_RANGE_MIN  = 1.1  # m — 사람 z_range 기준 (두 발~머리 수직 범위)
+PERSON_MIN_DURATION = 1.5  # s — 장기 트랙 기준 (실제 자유낙하 ROI 통과 ≪ 0.5s)
+FALL_Z_DROP_MIN     = 0.30 # m — 장기 fell 트랙에서 실제 net 하강 최소치
+
 # data/reference/wrongChoice.png 재분석(narrow_roi 재생) 결과 확인된 하이재킹
 # (정지 트랙이 몇 프레임 미매칭 뒤 넓어진 max_jump 반경 안에 들어온 무관한
 # 물체를 "같은 물체의 연속"으로 흡수)을 막아보려고, 매칭이 요구하는
@@ -131,7 +136,11 @@ class Track:
     """
 
     def __init__(self, track_id: int, history_window: int = HISTORY_WINDOW,
-                 debug: bool = False, confirm_frames: int = CONFIRM_FRAMES):
+                 debug: bool = False, confirm_frames: int = CONFIRM_FRAMES,
+                 frame_dt: float = FRAME_DT,
+                 person_z_range_min: float = PERSON_Z_RANGE_MIN,
+                 person_min_duration: float = PERSON_MIN_DURATION,
+                 fall_z_drop_min: float = FALL_Z_DROP_MIN):
         self.id = track_id
         self.misses = 0                            # 연속 미매칭 프레임 수
         self.last_cluster: PointCloud | None = None  # 이번 프레임에 매칭된 원시 클러스터 (시각화용)
@@ -145,8 +154,18 @@ class Track:
         self._candidate_frames = 0
         self._confirm_frames   = confirm_frames
         self._debug             = debug
+        self._frame_dt         = frame_dt
 
-        self._tracker  = KalmanTracker(dt=FRAME_DT)
+        # 분류용 누적 통계 (rolling window 밖 과거도 반영)
+        self._person_z_range_min  = person_z_range_min
+        self._person_min_duration = person_min_duration
+        self._fall_z_drop_min     = fall_z_drop_min
+        self._total_obs_count     = 0
+        self._z_max_ever          = float("-inf")
+        self._z_min_ever          = float("inf")
+        self._z_first_obs: float | None = None   # 첫 관측 z (z_drop 기준점)
+
+        self._tracker  = KalmanTracker(dt=frame_dt)
         self._tracking = False   # 칼만 필터가 최소 1회 이상 보정됐는지
 
     # ── 메인 업데이트 ────────────────────────────────────────────────────────
@@ -167,7 +186,7 @@ class Track:
         if not self._tracking:
             return None
         predicted = self._tracker.F @ self._tracker.x
-        predicted[2, 0] -= 0.5 * GRAVITY * FRAME_DT ** 2
+        predicted[2, 0] -= 0.5 * GRAVITY * self._frame_dt ** 2
         return predicted[:3].flatten()
 
     def update(self, centroid: np.ndarray | None) -> bool:
@@ -192,6 +211,15 @@ class Track:
         height = float(smoothed[2])
         self._height_history.append(height)
         self._raw_height_history.append(raw_height)
+
+        # 분류용 누적 통계 갱신
+        self._total_obs_count += 1
+        if raw_height > self._z_max_ever:
+            self._z_max_ever = raw_height
+        if raw_height < self._z_min_ever:
+            self._z_min_ever = raw_height
+        if self._z_first_obs is None:
+            self._z_first_obs = raw_height
 
         if self._fall_triggered:
             return True
@@ -312,7 +340,7 @@ class Track:
         if peak_drop < PEAK_DROP_THRESHOLD:
             return False, ""
 
-        elapsed = (last_frame - peak_frame) * FRAME_DT
+        elapsed = (last_frame - peak_frame) * self._frame_dt
         avg_speed = peak_drop / elapsed if elapsed > 0 else float("inf")
         if avg_speed < MIN_AVG_DESCENT_SPEED:
             return False, ""
@@ -358,7 +386,7 @@ class Track:
         velocities = []
         midpoints  = []  # 각 속도가 대표하는 시각 (등가속 구간의 평균속도 = 중점 순간속도)
         for (i0, z0), (i1, z1) in zip(recent, recent[1:]):
-            dt = (i1 - i0) * FRAME_DT
+            dt = (i1 - i0) * self._frame_dt
             if dt <= 0:
                 return False, ""
             velocities.append((z1 - z0) / dt)
@@ -391,6 +419,46 @@ class Track:
     def fell(self) -> bool:
         """이 트랙이 현재 낙하로 확정된 상태인지."""
         return self._fall_triggered
+
+    @property
+    def track_class(self) -> str:
+        """트랙 분류: 'PERSON' / 'FALLING_OBJECT' / 'OTHER'.
+
+        scan_person.py의 배치 분류 로직을 실시간으로 근사한다.
+          - z_max / z_rng : 전체 관측 기간 누적값 (_z_max_ever 등)
+          - t_span        : 실제 관측 횟수 × frame_dt
+          - z_drop        : 최초 관측 z(_z_first_obs) - 최근 1/3 구간 평균
+        """
+        if self._total_obs_count == 0 or self._z_first_obs is None:
+            return "OTHER"
+
+        z_max  = self._z_max_ever
+        z_rng  = self._z_max_ever - self._z_min_ever
+        t_span = self._total_obs_count * self._frame_dt
+
+        # 1. 사람 메인 트랙: z_range(키 수준) 충분 + 장기 지속
+        if z_rng >= self._person_z_range_min and t_span >= self._person_min_duration:
+            return "PERSON"
+
+        # 2. 단명 fell: 빠른 낙하 물체 (음수 z 전용 클러스터는 바닥 반사)
+        if self._fall_triggered and t_span < self._person_min_duration:
+            return "FALLING_OBJECT" if z_max > 0.0 else "OTHER"
+
+        # 3. 장기 fell: net 하강 여부로 물체/사람 서브-트랙 구분
+        if self._fall_triggered:
+            raw_valid = [h for h in self._raw_height_history if h is not None]
+            n3 = max(1, len(raw_valid) // 3)
+            z_recent = sum(raw_valid[-n3:]) / n3 if raw_valid else z_max
+            z_drop = self._z_first_obs - z_recent
+            if z_drop >= self._fall_z_drop_min and z_max > 0.0:
+                return "FALLING_OBJECT"
+            return "PERSON"
+
+        # 4. 장기 지속 (fell 없음): 사람 몸 부위
+        if t_span >= self._person_min_duration:
+            return "PERSON"
+
+        return "OTHER"
 
     def z_velocity(self) -> float:
         """Z 속도 (m/s). 시각화용 — 칼만 필터의 평활화된 속도 추정치를 쓴다."""
@@ -451,12 +519,20 @@ class FallDetector:
 
     def __init__(self, history_window: int = HISTORY_WINDOW, debug: bool = False,
                  confirm_frames: int = CONFIRM_FRAMES, max_jump: float = MAX_JUMP,
-                 max_track_misses: int = TRACK_MAX_MISSES):
-        self._history_window   = history_window
-        self._debug             = debug
-        self._confirm_frames    = confirm_frames
-        self._max_jump          = max_jump
-        self._max_track_misses  = max_track_misses
+                 max_track_misses: int = TRACK_MAX_MISSES,
+                 frame_dt: float = FRAME_DT,
+                 person_z_range_min: float = PERSON_Z_RANGE_MIN,
+                 person_min_duration: float = PERSON_MIN_DURATION,
+                 fall_z_drop_min: float = FALL_Z_DROP_MIN):
+        self._history_window      = history_window
+        self._debug               = debug
+        self._confirm_frames      = confirm_frames
+        self._max_jump            = max_jump
+        self._max_track_misses    = max_track_misses
+        self._frame_dt            = frame_dt
+        self._person_z_range_min  = person_z_range_min
+        self._person_min_duration = person_min_duration
+        self._fall_z_drop_min     = fall_z_drop_min
 
         self._tracks: list[Track] = []
         self._next_id = 1
@@ -555,7 +631,11 @@ class FallDetector:
             if i in used_clusters or cen is None:
                 continue
             new_track = Track(self._next_id, history_window=self._history_window,
-                               debug=self._debug, confirm_frames=self._confirm_frames)
+                               debug=self._debug, confirm_frames=self._confirm_frames,
+                               frame_dt=self._frame_dt,
+                               person_z_range_min=self._person_z_range_min,
+                               person_min_duration=self._person_min_duration,
+                               fall_z_drop_min=self._fall_z_drop_min)
             self._next_id += 1
             new_track.last_cluster = clusters[i]
             new_track.update(cen)
@@ -566,6 +646,11 @@ class FallDetector:
             self.last_fall_track_id = fall_track.id
 
         return fell
+
+    @property
+    def has_falling_object(self) -> bool:
+        """낙하 물체(FALLING_OBJECT)로 분류된 트랙이 하나라도 있으면 True."""
+        return any(t.track_class == "FALLING_OBJECT" for t in self._tracks)
 
     def reset(self) -> None:
         self._tracks = []
