@@ -32,7 +32,8 @@ from arda.processing.clustering import cluster_points
 from arda.detection import FallDetector
 from arda.detection.fall_detector import (
     PEAK_Z_THRESHOLD, PEAK_DROP_THRESHOLD, MIN_DESCENT_FRAMES, RISING_TOLERANCE,
-    MIN_AVG_DESCENT_SPEED, FREEFALL_MIN_FRAMES, FREEFALL_ACCEL_MIN, FREEFALL_ACCEL_MAX, FRAME_DT,
+    MIN_AVG_DESCENT_SPEED, FREEFALL_MIN_FRAMES, FREEFALL_ACCEL_MIN, FREEFALL_ACCEL_MAX,
+    FREEFALL_MIN_TRIGGER_SPEED, FREEFALL_WINDOW_MAX, FRAME_DT,
 )
 from arda.utils import load_processing_config
 
@@ -199,13 +200,8 @@ def _diagnose_peak_drop(valid: list[tuple[int, float]]) -> str:
     return ""  # 경로 1/2 조건 충족 — 미감지 사유 아님
 
 
-def _diagnose_freefall(valid: list[tuple[int, float]]) -> str:
-    """경로 3(자유낙하) 미감지 사유 — fall_detector._freefall_check와 동일 로직."""
-    if len(valid) < FREEFALL_MIN_FRAMES:
-        return f"유효 프레임 {len(valid)}개 < {FREEFALL_MIN_FRAMES}개(자유낙하 판정 최소치)"
-
-    recent = valid[-FREEFALL_MIN_FRAMES:]
-
+def _diagnose_freefall_window(recent: list[tuple[int, float]]) -> str:
+    """_diagnose_freefall의 한 창 크기에 대한 판정 — fall_detector._freefall_window_check와 동일 로직."""
     if recent[-1][1] >= recent[0][1]:
         return "창 전체로 순하강이 아님(마지막 높이 >= 첫 높이)"
 
@@ -217,6 +213,9 @@ def _diagnose_freefall(valid: list[tuple[int, float]]) -> str:
         velocities.append((z1 - z0) / dt)
         midpoints.append((i0 + i1) / 2.0 * FRAME_DT)
 
+    if abs(velocities[-1]) < FREEFALL_MIN_TRIGGER_SPEED:
+        return f"마지막 구간 속도({velocities[-1]:+.2f}m/s)가 노이즈 최소기준(±{FREEFALL_MIN_TRIGGER_SPEED}m/s) 미만"
+
     if any(v2 >= v1 for v1, v2 in zip(velocities, velocities[1:])):
         return "구간 사이 가속이 끊김(반등/정체)"
 
@@ -225,7 +224,24 @@ def _diagnose_freefall(valid: list[tuple[int, float]]) -> str:
     if not (-FREEFALL_ACCEL_MAX <= accel <= -FREEFALL_ACCEL_MIN):
         return f"가속도({accel:+.1f}m/s²)가 자유낙하 범위(-{FREEFALL_ACCEL_MAX}~-{FREEFALL_ACCEL_MIN}) 밖"
 
-    return ""  # 경로 3 조건 충족 — 미감지 사유 아님
+    return ""  # 이 창 크기는 조건 충족 — 미감지 사유 아님
+
+
+def _diagnose_freefall(valid: list[tuple[int, float]]) -> str:
+    """경로 3(자유낙하) 미감지 사유 — fall_detector._freefall_check와 동일 로직(좁은 창부터 확장 시도)."""
+    if len(valid) < FREEFALL_MIN_FRAMES:
+        return f"유효 프레임 {len(valid)}개 < {FREEFALL_MIN_FRAMES}개(자유낙하 판정 최소치)"
+
+    max_window = min(len(valid), FREEFALL_WINDOW_MAX)
+    first_reason = ""
+    for window_size in range(FREEFALL_MIN_FRAMES, max_window + 1):
+        reason = _diagnose_freefall_window(valid[-window_size:])
+        if reason == "":
+            return ""  # 이 창 크기에서 조건 충족 — 실제로는 감지됐어야 함
+        if not first_reason:
+            first_reason = f"{window_size}프레임 창: {reason}"
+
+    return first_reason
 
 
 def diagnose(result: dict) -> str:

@@ -83,6 +83,35 @@ FREEFALL_MIN_FRAMES = 3     # 자유낙하로 볼 최소 연속 유효 프레임
 FREEFALL_ACCEL_MIN  = 3.0   # m/s² — 최소 이만큼은 가속해야 자유낙하 (공기저항 등 여유)
 FREEFALL_ACCEL_MAX  = 18.0  # m/s² — 이보다 크면 센서 노이즈/점프로 보고 배제 (중력 9.8 기준 여유)
 
+# data/raw/covered/record_raw_20260728_154201 trial5 track#1 재현 결과 발견된
+# 버그: 3초 내내 z=0.04~0.07m에 정지해 있던 클러스터가, 클러스터 중심점
+# 계산 노이즈로 인한 ±1.5cm 수준의 짧은 상하 흔들림(0.047→0.062→0.046m)만으로
+# 자유낙하로 오판정됐다 — 순변위 부호(음수)와 속도 단조 감소, 가속도 범위
+# 조건을 전부 "우연히" 만족했지만(v=-0.16m/s, accel=-3.1m/s²로 문턱을 근소하게
+# 통과), 실제 이동 속도 자체는 노이즈 수준이었다. 문제는 이 세 조건 중
+# 어느 것도 속도·변위의 절대적 크기를 보지 않는다는 것 — 부호와 상대적
+# 순서, 그리고 아주 짧은(2구간) 기준선에서 계산한 가속도만 본다. 실제
+# 자유낙하라면 이 시점(경로 3 판정 시점)의 속도 자체가 이미 노이즈보다
+# 뚜렷하게 커야 하므로, 마지막 구간 속도의 절대값에도 최소 기준을 둔다.
+# 실측 배치 전반의 진짜 자유낙하 감지 이벤트들의 최소 속도가 0.83m/s였고
+# (그 아래로는 이번에 발견된 노이즈성 오판정 사례의 0.16m/s뿐), 그 사이
+# 여유를 두고 0.5m/s로 잡았다.
+FREEFALL_MIN_TRIGGER_SPEED = 0.5  # m/s — 마지막 구간 속도 절대값 최소 기준
+
+# data/raw/uncovered/record_raw_20260728_155515 trial1 track#2 재현 결과
+# 발견된 문제: 명백히 실제 낙하로 보이는 궤적(0.306→0.190→0.070→-0.272m,
+# 0.3초 만에 순하강 0.58m)인데도 감지가 안 됐다 — FREEFALL_MIN_FRAMES(3)
+# 프레임만으로 계산하면 속도 2개(인접 구간)뿐이라 한쪽 구간의 무게중심
+# 노이즈(클러스터 매칭이 흔들려 순간적으로 튐)가 두 속도 추정 모두에
+# 걸쳐 가속도를 왜곡시킨다 — 이 사례는 앞 구간 accel=-0.4(너무 느림),
+# 바로 다음 구간 accel=-22.2(너무 빠름)로 오히려 문턱 양쪽 다 걸려 탈락
+# 했다. 유효 프레임이 더 있으면(4개 이상) 그만큼 창을 넓혀 속도를 더
+# 여러 구간에서 뽑으면, 한 구간의 순간 노이즈가 희석돼 전체 가속도
+# 추정이 훨씬 안정적이다(같은 사례 재계산 시 accel=-11.3으로 정상 범위
+# 진입). 다만 너무 넓히면 낙하 시작 훨씬 전의 무관한 이력까지 끌어와
+# 가속도를 과소평가시킬 수 있어 상한을 둔다.
+FREEFALL_WINDOW_MAX = 5     # 프레임 — 자유낙하 가속도 계산에 쓰는 최근 유효 프레임 상한
+
 CONFIRM_FRAMES = 1          # 낙하 조건 충족 즉시 확정
 HISTORY_WINDOW = 10         # 프레임 수 (100ms × 10 = 1.0초)
 FRAME_DT       = 0.10       # 초 (100ms 프레임 주기)
@@ -354,18 +383,31 @@ class Track:
     def _freefall_check(self, valid: list[tuple[int, float]]) -> tuple[bool, str]:
         """경로 3 — 시작 높이 무관, 최근 궤적이 자유낙하 패턴인지만 본다.
 
-        최근 FREEFALL_MIN_FRAMES개 유효 프레임 구간에서
-        - 창(window) 전체로 봤을 때 실제로 순하강(마지막 높이 < 첫 높이)이고
-        - 프레임별 속도를 구해, 매 구간 속도가 계속 더 음수로(가속) 바뀌고
-          (반등/정체 없음)
-        - 그 가속도가 중력 근방(FREEFALL_ACCEL_MIN~MAX)이면
-        낙하로 판정한다. PEAK_Z_THRESHOLD 등 절대 높이 조건은 보지 않는다.
+        가장 좁은 창(FREEFALL_MIN_FRAMES)부터 시도해, 실패하면 한 프레임씩
+        창을 넓혀가며(최대 FREEFALL_WINDOW_MAX) 다시 시도한다 — 좁은 창을
+        먼저 보는 이유는 data/raw/uncovered/record_raw_20260728_155515
+        trial1 track#2 재현 결과 확인됨: 실제 낙하가 이미 좁은 창에서
+        깨끗하게 잡히는 경우(예: drop_test_20260717_freefall_validation
+        trial1 — 평평하게 시작하다 마지막 구간에서 급가속) 넓은 창을 쓰면
+        그 평평했던 앞부분 때문에 오히려 모노토닉 조건에서 탈락한다. 반대로
+        uncovered trial1 track#2처럼 정확히 좁은 창(3프레임)의 마지막 구간
+        하나가 클러스터 매칭 흔들림으로 튀어(가속도가 허용범위를 벗어나게)
+        실패하는 경우엔, 한 프레임 더 넓혀 그 튄 구간을 다른 구간과 섞어
+        평균 내면 전체 가속도가 다시 정상 범위로 들어온다. 그래서 "좁은
+        창부터 시도, 실패 시 확장"이 두 경우 모두를 살린다.
         """
         if len(valid) < FREEFALL_MIN_FRAMES:
             return False, ""
 
-        recent = valid[-FREEFALL_MIN_FRAMES:]
+        max_window = min(len(valid), FREEFALL_WINDOW_MAX)
+        for window_size in range(FREEFALL_MIN_FRAMES, max_window + 1):
+            result, reason = self._freefall_window_check(valid[-window_size:])
+            if result:
+                return result, reason
+        return False, ""
 
+    def _freefall_window_check(self, recent: list[tuple[int, float]]) -> tuple[bool, str]:
+        """_freefall_check의 한 창 크기에 대한 실제 판정 로직."""
         # data/raw/drop_test_20260720_mot_review 재생 분석 결과 발견된 버그:
         # "속도가 점점 더 음수로 바뀌는 것"과 "실제로 하강 중인 것"은 다른데,
         # 원래 아래 모노토닉 체크만으로는 이 둘을 구분 못 했다 — 위로
@@ -391,6 +433,13 @@ class Track:
                 return False, ""
             velocities.append((z1 - z0) / dt)
             midpoints.append((i0 + i1) / 2.0 * FRAME_DT)
+
+        # 정지 클러스터의 위치 노이즈만으로도 순변위 부호·속도 단조감소·
+        # 가속도 범위를 전부 우연히 만족할 수 있다 (FREEFALL_MIN_TRIGGER_SPEED
+        # 주석의 trial5 재현 사례 참고) — 마지막 구간 속도가 노이즈 수준이면
+        # 애초에 자유낙하 후보로 보지 않는다.
+        if abs(velocities[-1]) < FREEFALL_MIN_TRIGGER_SPEED:
+            return False, ""
 
         # 매 구간 계속 더 음수로 가속해야 한다 (반등/정체 시 탈락)
         if any(v2 >= v1 for v1, v2 in zip(velocities, velocities[1:])):
