@@ -1,32 +1,59 @@
-"""to_site_coords 단위 테스트."""
+"""local_to_latlon() 단위 테스트."""
 
-import numpy as np
+import math
 
-from arda.utils.site import to_site_coords
+import pytest
 
-
-def test_zero_origin_returns_unchanged_coords():
-    local = np.array([0.5, 1.2, 0.3])
-    site = to_site_coords(local, [0.0, 0.0, 0.0])
-    assert np.allclose(site, local)
+from arda.utils.site import METERS_PER_DEG_LAT, local_to_latlon
 
 
-def test_nonzero_origin_offsets_coords():
-    local = np.array([0.5, 1.2, 0.3])
-    origin = [10.0, 20.0, 0.0]
-    site = to_site_coords(local, origin)
-    assert np.allclose(site, [10.5, 21.2, 0.3])
+def test_zero_offset_returns_site_latlon_unchanged():
+    lat, lon = local_to_latlon(0.0, 0.0, site_lat=37.5, site_lon=127.0, heading_deg=0.0)
+    assert lat == pytest.approx(37.5)
+    assert lon == pytest.approx(127.0)
 
 
-def test_accepts_plain_list_inputs():
-    site = to_site_coords([1.0, 1.0, 1.0], [1.0, 1.0, 1.0])
-    assert np.allclose(site, [2.0, 2.0, 2.0])
+def test_heading_zero_forward_moves_north_right_moves_east():
+    # 정북(heading=0)을 보고 있으면 정면(y)은 북쪽, 우측(x)은 동쪽으로 이동해야 한다.
+    lat_fwd, lon_fwd = local_to_latlon(0.0, METERS_PER_DEG_LAT, site_lat=0.0, site_lon=0.0, heading_deg=0.0)
+    assert lat_fwd == pytest.approx(1.0)  # 위도 1도만큼 북쪽
+    assert lon_fwd == pytest.approx(0.0, abs=1e-9)
+
+    lat_right, lon_right = local_to_latlon(METERS_PER_DEG_LAT, 0.0, site_lat=0.0, site_lon=0.0, heading_deg=0.0)
+    assert lat_right == pytest.approx(0.0, abs=1e-9)
+    assert lon_right == pytest.approx(1.0)  # 적도(lat=0)라 경도 1도 = 위도 1도와 같은 거리
 
 
-def test_negative_local_z_below_sensor_subtracts_correctly():
-    # 센서 아래에서 탐지된 포인트는 로컬 Z가 이미 음수이므로,
-    # 더하기만 해도 site.z보다 낮은 실좌표가 자연스럽게 나온다.
-    local = np.array([0.0, 1.0, -0.8])
-    origin = [0.0, 0.0, 1.1]
-    site = to_site_coords(local, origin)
-    assert np.allclose(site, [0.0, 1.0, 0.3])
+def test_heading_90_east_forward_moves_east_right_moves_south():
+    # 정동(heading=90)을 보고 있으면 정면(y)은 동쪽, 우측(x)은 남쪽으로 이동해야 한다
+    # — 부호가 heading에 따라 자동으로 바뀌는지 확인하는 핵심 테스트.
+    lat_fwd, lon_fwd = local_to_latlon(0.0, METERS_PER_DEG_LAT, site_lat=0.0, site_lon=0.0, heading_deg=90.0)
+    assert lat_fwd == pytest.approx(0.0, abs=1e-9)
+    assert lon_fwd == pytest.approx(1.0)
+
+    lat_right, lon_right = local_to_latlon(METERS_PER_DEG_LAT, 0.0, site_lat=0.0, site_lon=0.0, heading_deg=90.0)
+    assert lat_right == pytest.approx(-1.0)  # 우측(x)이 남쪽 = 위도 감소
+    assert lon_right == pytest.approx(0.0, abs=1e-9)
+
+
+def test_heading_180_south_flips_both_signs():
+    # 정남(heading=180)을 보고 있으면 정면(y)은 남쪽, 우측(x)은 서쪽 —
+    # heading=0 대비 부호가 둘 다 반대로 바뀌어야 한다.
+    lat, lon = local_to_latlon(
+        METERS_PER_DEG_LAT, METERS_PER_DEG_LAT, site_lat=0.0, site_lon=0.0, heading_deg=180.0
+    )
+    assert lat == pytest.approx(-1.0)
+    assert lon == pytest.approx(-1.0)
+
+
+def test_longitude_compresses_at_higher_latitude():
+    # 경도 1도의 실제 거리는 고위도로 갈수록 짧아지므로(위선이 좁아짐),
+    # 같은 동쪽 이동 거리(m)에 대해 고위도에서는 경도 변화(도)가 더 커야 한다.
+    site_lat = 60.0
+    _, lon_high = local_to_latlon(METERS_PER_DEG_LAT, 0.0, site_lat=site_lat, site_lon=0.0, heading_deg=0.0)
+    _, lon_low = local_to_latlon(METERS_PER_DEG_LAT, 0.0, site_lat=0.0, site_lon=0.0, heading_deg=0.0)
+
+    delta_high = abs(lon_high - 0.0)
+    delta_low = abs(lon_low - 0.0)
+    assert delta_high > delta_low
+    assert delta_high == pytest.approx(1.0 / math.cos(math.radians(site_lat)))

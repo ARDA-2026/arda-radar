@@ -16,7 +16,7 @@ from arda.utils import (
     get_logger,
     load_processing_config,
     load_settings,
-    to_site_coords,
+    local_to_latlon,
 )
 
 logger = get_logger(__name__)
@@ -54,7 +54,9 @@ def main() -> None:
     args = parse_args()
     settings = load_settings(Path(args.settings))
     site_cfg = settings.get("site", {})
-    site_origin = [site_cfg.get("x", 0.0), site_cfg.get("y", 0.0), site_cfg.get("z", 0.0)]
+    site_lat = site_cfg.get("lat", 0.0)
+    site_lon = site_cfg.get("lon", 0.0)
+    site_heading_deg = site_cfg.get("heading_deg", 0.0)
 
     cfg = load_processing_config(Path(args.settings))
 
@@ -76,10 +78,10 @@ def main() -> None:
             "열화상 게이트 활성화 — 트리거 전송 UDP %s:%d, 판정 수신 포트 %d",
             args.thermal_host, args.thermal_port, args.thermal_verdict_port,
         )
-    # 열화상 게이트 대기 중인 낙하 1건의 실좌표(X,Y)와 트리거 전송 시각.
+    # 열화상 게이트 대기 중인 낙하 1건의 위도/경도와 트리거 전송 시각.
     # 응답이 오거나 pending-timeout이 지나면 None으로 비운다 — 대기 중에는
     # 새 낙하가 확정돼도 중복으로 트리거를 보내지 않는다(한 번에 하나만 판정).
-    pending_site_xy = None
+    pending_latlon = None
     pending_since = 0.0
     # FallDetector.update()는 한 번 확정된 트랙에 대해 계속 True를 반환하므로
     # (래치), 마지막으로 반응(서보 전송·로그·열화상 트리거)한 트랙 id를
@@ -117,12 +119,14 @@ def main() -> None:
                     if sender:
                         sender.send(detector.last_fall_centroid, fall=True)
 
-                    # 확정 시점의 실측 Z는 바닥 접촉 높이가 아니므로(피크 대비
-                    # 일정량만 하강한 순간일 뿐) 사용하지 않는다. X,Y만
-                    # 실측값을 site_origin으로 변환하고, Z는 site.z가 "바닥
-                    # 기준 센서 설치 높이"로 정의되어 있으므로 항상 바닥(0)이다.
+                    # X,Y(레이더 기준 좌우/정면 거리)만 실좌표 변환에 쓴다 —
+                    # 확정 시점의 실측 Z는 바닥 접촉 높이가 아니라 피크 대비
+                    # 일정량만 하강한 순간의 값이라 신뢰할 수 없어 애초에 쓰지
+                    # 않는다. site_heading_deg만큼 회전시켜 동/북 변위로 바꾼
+                    # 뒤 설치 위경도에 더한다 — 기기가 어느 방향을 보고
+                    # 설치되든 이 회전 덕분에 부호가 자동으로 맞는다.
                     x, y, _ = detector.last_fall_centroid
-                    site_x, site_y, _ = to_site_coords([x, y, 0.0], site_origin)
+                    lat, lon = local_to_latlon(x, y, site_lat, site_lon, site_heading_deg)
 
                     # fall_detector.py의 Track이 이미 "FALL DETECTED [track#N ...]"를
                     # 찍지만, run_all.sh처럼 여러 로그가 섞여 나올 때 놓치기 쉬워
@@ -132,38 +136,38 @@ def main() -> None:
                     logger.warning("*" * 50)
 
                     if not args.thermal_gate:
-                        logger.warning("낙하 위치(설치 좌표계) X=%.2f Y=%.2f Z=0.00(바닥)", site_x, site_y)
-                    elif pending_site_xy is None:
+                        logger.warning("낙하 위치(GPS) lat=%.6f lon=%.6f", lat, lon)
+                    elif pending_latlon is None:
                         # 이미 판정 대기 중인 낙하가 있으면 새 트리거를 또
                         # 보내지 않는다 — 노이즈로 fall이 반복돼도 한 번에
                         # 하나만 열화상에 판정을 맡긴다. 카메라가 서보에 고정
                         # 장착돼 서보가 향한 곳을 그대로 보므로, 좌표가 아니라
                         # "지금 관찰 시작"이라는 신호만 보낸다.
                         thermal_sender.send()
-                        pending_site_xy = (site_x, site_y)
+                        pending_latlon = (lat, lon)
                         pending_since = time.time()
                         logger.info(
-                            "열화상 판정 요청 전송 — X=%.2f Y=%.2f, 회신 대기 중", site_x, site_y,
+                            "열화상 판정 요청 전송 — lat=%.6f lon=%.6f, 회신 대기 중", lat, lon,
                         )
 
                 if thermal_receiver:
                     verdict = thermal_receiver.recv()
-                    if verdict is not None and pending_site_xy is not None:
-                        vx, vy = pending_site_xy
+                    if verdict is not None and pending_latlon is not None:
+                        vlat, vlon = pending_latlon
                         if verdict.person:
-                            logger.warning("낙하 위치(설치 좌표계) X=%.2f Y=%.2f Z=0.00(바닥) — 열화상 확인됨", vx, vy)
+                            logger.warning("낙하 위치(GPS) lat=%.6f lon=%.6f — 열화상 확인됨", vlat, vlon)
                         else:
-                            logger.info("낙하 판정 기각 — 열화상에서 사람 미확인 (X=%.2f Y=%.2f)", vx, vy)
-                        pending_site_xy = None
+                            logger.info("낙하 판정 기각 — 열화상에서 사람 미확인 (lat=%.6f lon=%.6f)", vlat, vlon)
+                        pending_latlon = None
                     elif (
-                        pending_site_xy is not None
+                        pending_latlon is not None
                         and (time.time() - pending_since) > args.thermal_pending_timeout
                     ):
                         logger.warning(
                             "열화상 판정 응답 없음(%.1fs 경과) — 낙하 확정 보류",
                             time.time() - pending_since,
                         )
-                        pending_site_xy = None
+                        pending_latlon = None
 
                 primary = detector.primary_track
                 if plotter and primary is not None and primary.last_cluster is not None:
