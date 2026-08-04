@@ -1,6 +1,6 @@
 """config/settings.yaml 로더.
 
-detect.py/trajectory.py/record.py/record_and_view.py/main.py가 각자
+detect.py/trajectory.py/record_and_view.py/main.py가 각자
 파일 상단에 중복 정의하던 전처리 튜닝 상수(MIN_SNR, CLUSTER_EPS 등)를
 config/settings.yaml의 processing: 섹션 한 곳에서 읽어오도록 공유한다.
 """

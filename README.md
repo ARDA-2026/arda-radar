@@ -49,8 +49,9 @@ python main.py --cli-port /dev/ttyUSB0 --data-port /dev/ttyUSB1
 # 낙하가 확정되는 순간의 좌표만 UDP(127.0.0.1:9999)로 전송되어 sibling
 # 프로젝트인 arda-servo(서보 모터 제어기)가 소비한다. 비활성화하려면 --no-servo-out.
 
-# 데이터 녹화 (60초, 하드웨어 연결 필요)
-python scripts/record.py --output data/raw/session1.jsonl --duration 60
+# 데이터 녹화 + 시각화 (60초, 하드웨어 연결 필요). --label을 주면
+# data/raw/<라벨>/ 아래 원시 데이터(.json)와 시각화 이미지(.png)도 저장
+python scripts/record_and_view.py --duration 60 --label session1
 
 # 녹화 재생 (하드웨어 없이 검증 가능)
 python scripts/replay.py data/raw/session1.jsonl
@@ -154,8 +155,8 @@ North = -x·sin(heading) + y·cos(heading)
 ## 낙하 감지 설정값 (`config/settings.yaml`)
 
 `config/settings.yaml`의 `processing:` 섹션은 `arda.utils.load_processing_config()`를
-통해 `main.py`와 `scripts/detect.py`·`trajectory.py`·`record.py`·
-`record_and_view.py`·`analyze_drops.py`가 공통으로 읽습니다 — 이 파일 한 곳만
+통해 `main.py`와 `scripts/detect.py`·`trajectory.py`·`record_and_view.py`·
+`analyze_drops.py`가 공통으로 읽습니다 — 이 파일 한 곳만
 고치면 전부에 반영됩니다 (이전엔 각 스크립트 상단에 동일한 값이 중복 하드코딩돼
 있었습니다).
 
@@ -193,8 +194,7 @@ North = -x·sin(heading) + y·cos(heading)
 | 스크립트 | 역할 |
 |----------|------|
 | `check_ports.py` | 센서 연결 전 포트 진단 — CLI/Data 포트에서 raw 바이트가 들어오는지만 확인 |
-| `record.py` | 지정 시간만큼 레이더 데이터를 녹화해 JSON으로 저장 (임계값 튜닝용 데이터 수집) |
-| `record_and_view.py` | 짧게 녹화한 뒤 포인트·클러스터·타겟 무게중심의 Z(t)/X(t)/Y(t) 궤적을 그래프로 시각화 |
+| `record_and_view.py` | 녹화 후 포인트·클러스터·타겟 무게중심의 Z(t)/X(t)/Y(t) 궤적을 그래프로 시각화 (기본: 화면 표시만). `--label`을 주면 원시 데이터(JSON)와 시각화 이미지(PNG)를 `data/raw/<라벨>/`에 저장, `--duration`으로 녹화 시간 조절 |
 | `replay.py` | 녹화된 JSONL 파일을 재생하며 낙하 감지 로직을 검증 (하드웨어 불필요) |
 | `detect.py` | 실시간 낙하 감지 실행 — SNR/ROI 필터 → DBSCAN → `select_target` → `FallDetector` |
 | `trajectory.py` | 실시간으로 Z축 하강 궤적과 감지 상태를 시각화 (`detect.py`와 동일 파이프라인) |

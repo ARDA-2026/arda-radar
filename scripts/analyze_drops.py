@@ -1,10 +1,10 @@
 """녹화된 낙하 데이터 여러 개를 일괄 재생·비교 분석하는 스크립트.
 
-record.py로 녹화한 JSON 파일들(같은 물체를 여러 번 떨어뜨린 녹화)을 모아
-'현재' 파이프라인(SNR/ROI 필터 → DBSCAN → FallDetector 다중 추적)으로
-다시 돌려, 시행별 궤적·판정 결과를 하나의 그래프로 비교하고 요약 통계를
-출력한다. record.py가 녹화 당시 저장해둔 is_falling 값에 의존하지 않고
-원시 포인트(points)를 다시 재생하므로, 이후 알고리즘을 바꿔도 같은
+record_and_view.py --label로 녹화한 원시 JSON 파일들(같은 물체를 여러 번
+떨어뜨린 녹화)을 모아 '현재' 파이프라인(SNR/ROI 필터 → DBSCAN →
+FallDetector 다중 추적)으로 다시 돌려, 시행별 궤적·판정 결과를 하나의
+그래프로 비교하고 요약 통계를 출력한다. 녹화 당시의 판정 결과에 의존하지
+않고 원시 포인트(points)를 다시 재생하므로, 이후 알고리즘을 바꿔도 같은
 녹화로 재검증할 수 있다.
 
 실행:
@@ -322,7 +322,7 @@ def plot_points_clusters(results: list[dict], folder: Path) -> Path:
 
 def main():
     p = argparse.ArgumentParser(description="녹화된 낙하 데이터 일괄 재생·비교 분석")
-    p.add_argument("folder", help="record.py로 녹화한 .json 파일들이 있는 폴더")
+    p.add_argument("folder", help="record_and_view.py --label로 녹화한 .json 파일들이 있는 폴더")
     p.add_argument("--near-y-max", type=float, default=None,
                    help="이 거리(m)보다 먼 클러스터는 타겟 후보에서 제외 "
                         "(사람처럼 항상 더 먼 곳에서 움직이는 대상이 같이 잡힐 때 사용)")

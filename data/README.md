@@ -2,7 +2,7 @@
 
 ```
 data/
-├── raw/          # record.py로 녹화한 세션 (시나리오별 폴더, raw/README.md 참고)
+├── raw/          # record_and_view.py --label로 녹화한 세션 (시나리오별 폴더, raw/README.md 참고)
 ├── reference/    # 특정 실패 사례를 보여주기 위해 남겨둔 참고용 캡처 이미지
 └── logs/         # 실행 중 쌓이는 이벤트 로그 (arda.log)
 ```
