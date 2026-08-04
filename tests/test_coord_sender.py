@@ -15,7 +15,7 @@ def test_send_emits_udp_json_payload():
     port = listener.getsockname()[1]
 
     sender = CoordSender(host="127.0.0.1", port=port)
-    sender.send(np.array([0.5, 1.2, 0.3]), fall=True)
+    sender.send(np.array([0.5, 1.2, 0.3]), fall=True, confidence=0.87)
 
     data, _ = listener.recvfrom(4096)
     payload = json.loads(data.decode("utf-8"))
@@ -24,7 +24,26 @@ def test_send_emits_udp_json_payload():
     assert payload["y"] == 1.2
     assert payload["z"] == 0.3
     assert payload["fall"] is True
+    assert payload["confidence"] == 0.87
     assert "ts" in payload
+
+    sender.close()
+    listener.close()
+
+
+def test_send_defaults_confidence_to_zero():
+    listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.settimeout(1.0)
+    port = listener.getsockname()[1]
+
+    sender = CoordSender(host="127.0.0.1", port=port)
+    sender.send(np.array([0.5, 1.2, 0.3]))
+
+    data, _ = listener.recvfrom(4096)
+    payload = json.loads(data.decode("utf-8"))
+
+    assert payload["confidence"] == 0.0
 
     sender.close()
     listener.close()
