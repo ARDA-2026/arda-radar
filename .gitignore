@@ -16,6 +16,10 @@ data/logs/
 data/*.json
 !data/**/.gitkeep
 
+# 재현율/정밀도 트레이드오프 설명용 예시 이미지 — 특정 시점 모델 확률 기준이라
+# 재학습할 때마다 값이 바뀌어 금방 낡는 참고 자료, 재현에 필요한 데이터가 아님
+data/recall_examples/
+
 # 학습된 모델
 models/*.pkl
 models/*.pt

@@ -15,6 +15,7 @@
 """
 
 from collections import deque
+import math
 import numpy as np
 
 from ..processing.pointcloud import PointCloud
@@ -98,6 +99,76 @@ FREEFALL_ACCEL_MAX  = 18.0  # m/s² — 이보다 크면 센서 노이즈/점프
 # 여유를 두고 0.5m/s로 잡았다.
 FREEFALL_MIN_TRIGGER_SPEED = 0.5  # m/s — 마지막 구간 속도 절대값 최소 기준
 
+# 낙하 판정(_fall_triggered)은 이진값으로 남겨둔다 — 노이즈로 인한 오판정을
+# 하드 게이트로 걸러보려는 시도(자유낙하 창 확장, 연속 프레임 확정, 낙하
+# 깊이 확인, ROI 축소, 도플러 일관성 등)를 전부 71개 실측 배치로 검증해봤지만
+# 예외 없이 진짜 낙하를 대거 같이 잃었다 — 문턱을 어느 쪽으로 옮겨도 노이즈와
+# 진짜 낙하가 겹치는 회색지대가 있어서였다. 그래서 판정 자체를 더 엄격하게
+# 만드는 대신, 이미 확정된 낙하에 "이게 노이즈보다는 진짜에 가까운 특징을
+# 얼마나 갖췄는지"를 보조적으로 알려주는 신뢰도 점수를 덧붙인다.
+#
+# 처음엔 손으로 조합한 휴리스틱(문턱 초과 여유 + dwell + 반등 감점)이었는데,
+# data/labeling_worksheet.csv에 손으로 라벨링한 71개 배치의 확정 이벤트
+# 61건(진짜 28 / 노이즈 33, 애매한 11건 제외)으로 검증해보니 정확도 0.72
+# 수준이었다. 같은 라벨로 로지스틱 회귀를 학습(배치 단위 leave-one-out
+# 검증: 정확도 0.89, 재현율 0.89, 정밀도 0.86)했더니 손튜닝 휴리스틱보다
+# 뚜렷이 나아서, 아래 _MODEL_* 계수로 교체했다 — 학습에 쓴 특징은
+# _unified_features() 참고. 낙하 감지에서는 "놓치는 것"이 "오탐"보다
+# 훨씬 치명적이라(재현율 우선), 기본 0.5 대신 LIKELY_REAL_THRESHOLD=0.24를
+# 쓴다 — 임계값을 낮출수록 재현율은 오르지만 대가로 오탐도 늘어나는데,
+# 완전한 재현율(FN=0)까지 밀어붙이면 정밀도가 0.61까지 떨어져 원래
+# 휴리스틱과 다를 바 없어지므로, FN 1건까지만 허용하는 지점(0.24)에서
+# 절충했다.
+#
+# 학습 특징은 반드시 "확정되는 바로 그 순간"의 값으로 뽑아야 한다 — 처음
+# CSV를 뽑을 때 z_max_ever/avg_pts 등 일부를 트랙이 소멸할 때까지의
+# 최종값으로 잘못 뽑았었는데(경로 1/2의 peak_z 등은 확정 순간 값이라
+# 서로 시점이 어긋남), 실제 배포 코드(_model_confidence, 확정 즉시 1회
+# 호출)는 오직 확정 순간의 값만 알 수 있어 학습·서빙 시점이 안 맞았다
+# (covered trial1/track#2처럼 명백한 진짜 낙하가 실시간 재생에서 0.15로
+# 나오는 등, 재검증 중 발견). CSV 전체를 확정 순간 기준으로 다시 뽑아
+# 재학습했다 — rebound_penalized는 확정 그 순간엔 항상 False라 학습
+# 데이터에 분산이 없어 계수가 0으로 나왔지만(반등 여부 자체는 다른
+# 특징들이 사후 재계산 시점엔 자연히 함께 갱신되어 있어 간접적으로 반영됨),
+# 나머지 계수는 재학습 후에도 검증 지표가 거의 그대로였다.
+#
+# sphere_person(사람이 옆에 서 있는 상태에서 공 낙하, 10건 모두 진짜 낙하)
+# 배치 추가 후 71건(진짜 38 / 노이즈 33)으로 재학습 — scripts/retrace_track.py
+# (마우스로 궤적을 그려 자동 추적이 조각내거나 하이재킹한 트랙을 사람이
+# 직접 보정하는 도구)로 라벨링했다. 처음 뽑은 값은 트리거 이후에도 미매칭
+# 프레임을 녹화 끝까지 계속 먹이는 바람에 maxlen=10짜리 _height_history/
+# _raw_height_history가 전부 None으로 밀려나 peak_z/net_drop/avg_descent_speed/
+# recent_v/recent_a 5개가 0으로 깨져 있었다(재현 중 발견) — build_manual_track()이
+# 트리거되는 바로 그 프레임에서 즉시 스냅샷 뜨도록 고치고 10건 다시 그려
+# 받았다. 배치 단위 leave-one-out 재검증 결과 LIKELY_REAL_THRESHOLD=0.24에서
+# 재현율이 0.96(FN=1)에서 1.00(FN=0)으로 개선됐고 정밀도는 0.79로 그대로라
+# (기존엔 FN=0까지 밀면 정밀도가 0.61까지 떨어졌었다), 임계값은 그대로 두고
+# 계수만 교체한다.
+_MODEL_FEATURE_ORDER = [
+    "dwell", "peak_z", "net_drop", "avg_descent_speed", "recent_v", "recent_a",
+    "z_max_ever", "z_min_ever", "avg_pts", "max_pts", "rebound_penalized",
+]
+_MODEL_MEAN = [3.929577, 0.297815, 0.49178, 2.164382, -2.729538, -11.108708,
+               0.3064, -0.252424, 8.314639, 14.802817, 0.0]
+_MODEL_SCALE = [1.817938, 0.395246, 0.442052, 2.20304, 2.426245, 13.533177,
+                0.39503, 0.336519, 5.117823, 9.624821, 1.0]
+_MODEL_COEF = [-0.93064, 0.139807, 0.631744, 1.229086, -1.905325, 0.635923,
+               0.128977, 0.460901, 1.051285, -0.333993, 0.0]
+_MODEL_INTERCEPT = 1.137596
+LIKELY_REAL_THRESHOLD = 0.24  # confidence가 이 이상이면 노이즈보다 진짜에 가깝다고 본다
+
+# covered trial12/track1(장기 정지 후 단발 노이즈 딥) 재현 결과: 확정 시점
+# z=-0.069m였는데 바로 다음 프레임 z=+0.133m로 확정 높이보다도 더 위로
+# 반등했다 — 진짜 낙하라면 물리적으로 이렇게 짧은 시간에 다시 올라올 수
+# 없다(바운스라 해도 확정 시점보다 높이 튀는 경우는 드물다). 반대로
+# covered trial7·uncovered trial1/track2 같은 검증된 진짜 낙하는 확정
+# 직후 레이더 반사가 사라져(바닥 근처 소실) 이 체크 자체가 아예 안 걸린다
+# — 그래서 이 체크는 노이즈만 골라내고 진짜 낙하는 건드리지 않는다.
+# rebound_penalized는 그 자체로 모델 입력 특징이라, 반등이 확인되면 페널티를
+# 곱하는 대신 그 특징값을 반영해 모델을 다시 계산한다.
+POST_TRIGGER_CHECK_FRAMES     = 3    # 확정 후 이 프레임까지만 반등 여부 관찰
+POST_TRIGGER_REBOUND_MARGIN   = 0.10 # m — 확정 시점 높이보다 이만큼 넘게 오르면 반등
+
 # data/raw/uncovered/record_raw_20260728_155515 trial1 track#2 재현 결과
 # 발견된 문제: 명백히 실제 낙하로 보이는 궤적(0.306→0.190→0.070→-0.272m,
 # 0.3초 만에 순하강 0.58m)인데도 감지가 안 됐다 — FREEFALL_MIN_FRAMES(3)
@@ -119,6 +190,17 @@ FRAME_DT       = 0.10       # 초 (100ms 프레임 주기)
 # 다중 추적 — 트랙 매칭/생명주기
 MAX_JUMP = 0.5             # m — 트랙 예측 위치 기준, 클러스터를 그 트랙으로 매칭할 최대 거리
 TRACK_MAX_MISSES = 5       # 프레임 — 이 이상 연속으로 매칭 안 되면 트랙 삭제 (500ms)
+
+# data/raw/dropball처럼 max_jump보다 빠르게 하강하는 물체가 매 프레임
+# 새 트랙으로 쪼개지는 문제(재현 시 0.5초 안에 트랙 14개 생성) 대응으로,
+# 이미 하강 중인 트랙의 Z축 매칭 반경만 속도(칼만 평활화 속도·원시
+# 프레임 간 속도 둘 다 시도)에 비례해 넓히는 방식을 시도했었다. 그런데
+# 둘 다 트랙 생성 직후 1~2프레임은 속도 정보 자체가 없어 정작 가장
+# 심하게 쪼개지는 구간에는 효과가 없었고(dropball 최악 사례는 그대로
+# 트랙 14개), 오히려 다중 트랙이 클러스터를 두고 경쟁하는 상황에서
+# 그리디 매칭 우선순위가 바뀌어 기존에 잘 되던 실제 낙하 몇 건을
+# 깨뜨렸다(실측 71개 배치 회귀 57/71→55~56/71, humanfall_Rside
+# 3/3→2/3). 순효과가 마이너스라 폐기했다.
 
 # 트랙 분류 — 사람 vs 낙하 물체
 PERSON_Z_RANGE_MIN  = 1.1  # m — 사람 z_range 기준 (두 발~머리 수직 범위)
@@ -178,8 +260,13 @@ class Track:
 
         self._height_history: deque[float | None] = deque(maxlen=history_window)
         self._raw_height_history: deque[float | None] = deque(maxlen=history_window)
+        self._n_pts_history: deque[int] = deque(maxlen=history_window)  # 모델 특징(avg_pts/max_pts)용
         self._fall_triggered  = False
         self._trigger_reason  = ""
+        self._trigger_confidence = 0.0
+        self._trigger_raw_height: float | None = None
+        self._post_trigger_count = 0
+        self._rebound_penalized  = False
         self._candidate_frames = 0
         self._confirm_frames   = confirm_frames
         self._debug             = debug
@@ -240,6 +327,7 @@ class Track:
         height = float(smoothed[2])
         self._height_history.append(height)
         self._raw_height_history.append(raw_height)
+        self._n_pts_history.append(len(self.last_cluster) if self.last_cluster is not None else 0)
 
         # 분류용 누적 통계 갱신
         self._total_obs_count += 1
@@ -251,6 +339,7 @@ class Track:
             self._z_first_obs = raw_height
 
         if self._fall_triggered:
+            self._check_post_trigger_rebound(raw_height)
             return True
 
         candidate, reason = self._check_fall_visible()
@@ -261,10 +350,13 @@ class Track:
 
         fell = self._candidate_frames >= self._confirm_frames
         if fell:
-            self._fall_triggered    = True
-            self._trigger_reason    = reason
-            self.last_fall_centroid = smoothed
-            logger.warning("FALL DETECTED [track#%d %s] — Z=%.2f m", self.id, reason, height)
+            self._fall_triggered      = True
+            self._trigger_reason      = reason
+            self._trigger_confidence  = self._model_confidence()
+            self._trigger_raw_height  = raw_height
+            self.last_fall_centroid   = smoothed
+            logger.warning("FALL DETECTED [track#%d %s  conf=%.2f] — Z=%.2f m",
+                            self.id, reason, self._trigger_confidence, height)
 
         return fell
 
@@ -282,14 +374,80 @@ class Track:
 
         fell, reason = self._check_fall_on_disappear()
         if fell:
-            self._fall_triggered    = True
-            self._trigger_reason    = reason
-            self.last_fall_centroid = self.last_centroid
+            self._fall_triggered      = True
+            self._trigger_reason      = reason
+            self._trigger_confidence  = self._model_confidence()
+            last_valid_raw = next((h for h in reversed(self._raw_height_history) if h is not None), None)
+            self._trigger_raw_height = last_valid_raw
+            self.last_fall_centroid   = self.last_centroid
             z = self.last_centroid[2] if self.last_centroid is not None else float("nan")
-            logger.warning("FALL DETECTED (landing disappearance) [track#%d %s] — last Z=%.2f m",
-                           self.id, reason, z)
+            logger.warning("FALL DETECTED (landing disappearance) [track#%d %s  conf=%.2f] — last Z=%.2f m",
+                           self.id, reason, self._trigger_confidence, z)
 
         return fell
+
+    def _unified_features(self) -> list[float]:
+        """경로(피크-하강/자유낙하) 무관 공통 특징 벡터 — _MODEL_FEATURE_ORDER 순서.
+
+        data/labeling_worksheet.csv 라벨링에 쓴 것과 동일한 계산 방식이어야
+        학습된 계수가 의미가 있다. peak_z/net_drop/avg_descent_speed는
+        칼만 평활화 높이(_height_history) 기준, recent_v/recent_a는 원시
+        높이(_raw_height_history) 마지막 최대 3프레임 기준 — 각각 경로
+        1/2, 경로 3이 원래 쓰던 것과 같다(클래스 docstring 참고).
+        """
+        smoothed_valid = [(i, h) for i, h in enumerate(self._height_history) if h is not None]
+        if smoothed_valid:
+            peak_i = max(range(len(smoothed_valid)), key=lambda k: smoothed_valid[k][1])
+            peak_z = smoothed_valid[peak_i][1]
+            net_drop = peak_z - smoothed_valid[-1][1]
+            if peak_i < len(smoothed_valid) - 1:
+                elapsed = (smoothed_valid[-1][0] - smoothed_valid[peak_i][0]) * self._frame_dt
+                avg_descent_speed = net_drop / elapsed if elapsed > 0 else 0.0
+            else:
+                avg_descent_speed = 0.0
+        else:
+            peak_z = net_drop = avg_descent_speed = 0.0
+
+        raw_valid = [(i, h) for i, h in enumerate(self._raw_height_history) if h is not None]
+        recent = raw_valid[-3:] if len(raw_valid) >= 3 else raw_valid
+        velocities = []
+        for (i0, z0), (i1, z1) in zip(recent, recent[1:]):
+            dt = (i1 - i0) * self._frame_dt
+            if dt > 0:
+                velocities.append((z1 - z0) / dt)
+        recent_v = velocities[-1] if velocities else 0.0
+        recent_a = ((velocities[-1] - velocities[0]) / ((len(velocities) - 1) * self._frame_dt)
+                    if len(velocities) >= 2 else 0.0)
+
+        n_pts = list(self._n_pts_history) or [0]
+
+        return [
+            float(self._total_obs_count), peak_z, net_drop, avg_descent_speed,
+            recent_v, recent_a, self._z_max_ever, self._z_min_ever,
+            sum(n_pts) / len(n_pts), float(max(n_pts)),
+            1.0 if self._rebound_penalized else 0.0,
+        ]
+
+    def _model_confidence(self) -> float:
+        """학습된 로지스틱 회귀로 신뢰도(0~1)를 계산한다 — 모듈 docstring의
+        _MODEL_* 주석 참고."""
+        z = _MODEL_INTERCEPT
+        for x, mean, scale, coef in zip(self._unified_features(), _MODEL_MEAN, _MODEL_SCALE, _MODEL_COEF):
+            z += coef * (x - mean) / scale
+        return 1.0 / (1.0 + math.exp(-z))
+
+    def _check_post_trigger_rebound(self, raw_height: float) -> None:
+        """확정 직후 몇 프레임 동안 확정 시점보다 다시 위로 반등하는지 본다
+        — POST_TRIGGER_* 주석 참고. 반등이 확인되면 rebound_penalized 특징을
+        반영해 모델 신뢰도를 다시 계산한다(한 번만)."""
+        if (self._rebound_penalized
+                or self._post_trigger_count >= POST_TRIGGER_CHECK_FRAMES
+                or self._trigger_raw_height is None):
+            return
+        self._post_trigger_count += 1
+        if raw_height - self._trigger_raw_height > POST_TRIGGER_REBOUND_MARGIN:
+            self._rebound_penalized  = True
+            self._trigger_confidence = self._model_confidence()
 
     # ── 낙하 조건 체크 ───────────────────────────────────────────────────────
 
@@ -341,6 +499,7 @@ class Track:
         - 마지막 유효 Z가 피크 대비 PEAK_DROP_THRESHOLD 이상 하락
         - 피크~마지막 프레임 사이 평균 하강 속도가 MIN_AVG_DESCENT_SPEED 이상
           (자유낙하가 아닌 느린 하강 배제 — MIN_AVG_DESCENT_SPEED 주석 참고)
+
         """
         peak_pos   = max(range(len(valid)), key=lambda k: valid[k][1])
         peak_z     = valid[peak_pos][1]
@@ -470,6 +629,25 @@ class Track:
         return self._fall_triggered
 
     @property
+    def confidence(self) -> float:
+        """낙하 확정 시점의 신뢰도(0~1) — 모듈 docstring의 _MODEL_* 주석 참고.
+
+        data/labeling_worksheet.csv에 라벨링한 71개 배치 61건(진짜 28 /
+        노이즈 33)으로 학습한 로지스틱 회귀 출력이다. 확정 직후 최대
+        POST_TRIGGER_CHECK_FRAMES 프레임 동안 반등 여부가 반영돼 값이
+        한 번 더 바뀔 수 있다(_check_post_trigger_rebound 참고). 아직
+        확정 전이면 0.0.
+        """
+        return self._trigger_confidence
+
+    @property
+    def likely_real(self) -> bool:
+        """confidence가 LIKELY_REAL_THRESHOLD 이상인지 — 낙하 감지는 놓치는
+        게 오탐보다 치명적이라 재현율을 우선해 기본 0.5보다 낮게 잡았다
+        (LIKELY_REAL_THRESHOLD 주석 참고)."""
+        return self._trigger_confidence >= LIKELY_REAL_THRESHOLD
+
+    @property
     def track_class(self) -> str:
         """트랙 분류: 'PERSON' / 'FALLING_OBJECT' / 'OTHER'.
 
@@ -561,6 +739,9 @@ class FallDetector:
         트랙에 대해 계속 True를 반환하므로(래치), 호출부에서 "새로 확정된
         낙하인지, 같은 낙하가 계속 보고되는 중인지"를 구분하려면 이 값이
         이전 프레임과 달라졌는지 비교하면 된다.
+    last_fall_confidence: 그 낙하의 신뢰도(0~1) — Track.confidence 참고.
+        판정 자체(이진값)는 바꾸지 않고, 노이즈로 인한 오판정과 진짜
+        낙하를 사후에 구분하는 보조 지표로 쓴다.
     last_centroid: 현재 "주 트랙"(primary_track)의 최신 무게중심 — 매
         프레임 갱신되며, 서보 좌표 전송처럼 낙하 확정 여부와 무관하게
         연속적인 대표 위치가 필요한 호출부용 편의 속성이다.
@@ -588,6 +769,7 @@ class FallDetector:
 
         self.last_fall_centroid: np.ndarray | None = None
         self.last_fall_track_id: int | None = None
+        self.last_fall_confidence: float = 0.0
 
     # ── 메인 업데이트 ────────────────────────────────────────────────────────
 
@@ -691,8 +873,9 @@ class FallDetector:
             self._tracks.append(new_track)
 
         if fall_track is not None:
-            self.last_fall_centroid = fall_track.last_fall_centroid
-            self.last_fall_track_id = fall_track.id
+            self.last_fall_centroid   = fall_track.last_fall_centroid
+            self.last_fall_track_id   = fall_track.id
+            self.last_fall_confidence = fall_track.confidence
 
         return fell
 
@@ -706,3 +889,4 @@ class FallDetector:
         self._next_id = 1
         self.last_fall_centroid = None
         self.last_fall_track_id = None
+        self.last_fall_confidence = 0.0
