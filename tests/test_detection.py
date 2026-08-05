@@ -147,19 +147,33 @@ def test_falling_track_and_nearby_static_cluster_stay_separate():
 
 
 def test_freefall_detected_regardless_of_starting_height():
-    # 경로 3: 피크가 PEAK_Z_THRESHOLD(0.37m)를 한참 밑도는 낮은 위치에서
-    # 처음 포착돼도, 최근 궤적이 중력 가속과 일치하는 자유낙하 패턴이면
-    # 낙하로 판정해야 한다 (narrow-ROI 테스트처럼 시작 위치가 낮거나
-    # 임의인 경우 대비).
+    # 경로 3: 낮은 위치(0.15m)에서 처음 포착돼도, 최근 궤적이 중력 가속과
+    # 일치하는 자유낙하 패턴이면 낙하로 판정해야 한다 (narrow-ROI 테스트처럼
+    # 시작 위치가 낮거나 임의인 경우 대비).
     g, dt = 9.8, 0.1
-    h0, v0 = 0.15, 0.5  # 피크(0.15m) 자체가 이미 임계값 미만
+    h0, v0 = 0.15, 0.5
     zs = [h0 - v0 * t - 0.5 * g * t * t for t in (i * dt for i in range(5))]
-    assert max(zs) < 0.37  # 이 시나리오가 실제로 기존 피크 기준을 못 넘는지 확인
 
     detector = FallDetector(history_window=10)
     fell = False
     for z in zs:
         fell = detector.update([_make_pc(z=z, doppler=-0.5)])
+    assert fell
+
+
+def test_peak_drop_detected_regardless_of_starting_height():
+    # 경로 1/2: 예전엔 PEAK_Z_THRESHOLD(0.37m) 게이트 때문에, 물체가 실제로는
+    # 더 높은 곳에서 떨어졌더라도 레이더가 그 높이에서는 못 보고 더 낮은
+    # 위치(여기선 0.15m)부터 잡히기 시작하면 경로 1/2가 아예 평가되지 않고
+    # 경로 3(자유낙하 가속 패턴)에만 기댈 수밖에 없었다. 등속(가속 없는)
+    # 하강이라 경로 3은 반응하지 않지만, 순 하락폭(PEAK_DROP_THRESHOLD)과
+    # 평균 속도(MIN_AVG_DESCENT_SPEED) 조건은 넉넉히 만족하므로 경로 1/2가
+    # 시작 높이와 무관하게 낙하로 판정해야 한다 (fall_detector.py의
+    # "PEAK_Z_THRESHOLD 제거" 주석 참고 — 실측 19개 배치 재검증으로 확인됨).
+    detector = FallDetector(history_window=10)
+    fell = False
+    for z in [0.15, 0.00, -0.15, -0.30]:  # 등속 -1.5 m/s, 순 하락폭 0.45m
+        fell = detector.update([_make_pc(z=z, doppler=-0.4)])
     assert fell
 
 

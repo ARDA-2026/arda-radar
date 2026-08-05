@@ -31,7 +31,7 @@ from arda.processing.pointcloud import PointCloud
 from arda.processing.clustering import cluster_points
 from arda.detection import FallDetector
 from arda.detection.fall_detector import (
-    PEAK_Z_THRESHOLD, PEAK_DROP_THRESHOLD, MIN_DESCENT_FRAMES, RISING_TOLERANCE,
+    PEAK_DROP_THRESHOLD, MIN_DESCENT_FRAMES, RISING_TOLERANCE,
     MIN_AVG_DESCENT_SPEED, FREEFALL_MIN_FRAMES, FREEFALL_ACCEL_MIN, FREEFALL_ACCEL_MAX,
     FREEFALL_MIN_TRIGGER_SPEED, FREEFALL_WINDOW_MAX, FRAME_DT,
 )
@@ -169,12 +169,11 @@ def summarize(result: dict) -> dict:
 
 
 def _diagnose_peak_drop(valid: list[tuple[int, float]]) -> str:
-    """경로 1/2(피크-하강) 미감지 사유."""
+    """경로 1/2(피크-하강) 미감지 사유. 피크의 절대 높이는 더 이상 게이트가
+    아니다 — fall_detector.py의 "PEAK_Z_THRESHOLD 제거" 주석 참고."""
     peak_pos   = max(range(len(valid)), key=lambda k: valid[k][1])
     peak_z     = valid[peak_pos][1]
     peak_frame = valid[peak_pos][0]
-    if peak_z < PEAK_Z_THRESHOLD:
-        return f"피크({peak_z:.2f}m) < 임계값({PEAK_Z_THRESHOLD}m)"
 
     post_peak = [(i, z) for i, z in valid if i > peak_frame]
     if len(post_peak) < MIN_DESCENT_FRAMES:
@@ -302,7 +301,6 @@ def plot_points_clusters(results: list[dict], folder: Path) -> Path:
             ax.axvline(ft, color="red", ls="--", alpha=0.6)
 
         ax.axhline(0, color="brown", ls="--", lw=1, alpha=0.5)
-        ax.axhline(PEAK_Z_THRESHOLD, color="gray", ls=":", lw=1, alpha=0.5)
         ax.set_title(f"{r['name']}  (회색=전체 포인트 / 색상=트랙 ID / 주황=대표 트랙, 빨간 점선=낙하 판정)",
                      fontsize=9)
         ax.set_ylabel("Z (m)")
@@ -356,8 +354,6 @@ def main():
         summaries.append(s)
 
     ax_z.axhline(0, color="brown", ls="--", lw=1, alpha=0.5, label="floor")
-    ax_z.axhline(PEAK_Z_THRESHOLD, color="gray", ls=":", lw=1, alpha=0.6,
-                 label=f"peak threshold({PEAK_Z_THRESHOLD}m)")
     ax_z.set_xlabel("Time (s)")
     ax_z.set_ylabel("Primary track Z (m)")
     ax_z.set_title("시행별 Z(t) 궤적 (점선 = 낙하 판정 시점)")

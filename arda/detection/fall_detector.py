@@ -36,7 +36,8 @@ logger = get_logger(__name__)
 # data/raw/drop_test_20260715 5회 재생 분석 결과: 실제 낙하는 피크 이후
 # 유효 프레임이 1~2개에서 소실되는 경우가 대부분이라(레이더 반사가
 # 바닥 근처에서 급격히 희박해짐), 3프레임 요구로는 5회 중 1회만 감지됐다.
-PEAK_Z_THRESHOLD   = 0.37  # m — 공중 판별 최소 높이 (노이즈 최대 0.36m보다는 높게 유지)
+# (이때 도입했던 피크 최소 높이 게이트 PEAK_Z_THRESHOLD=0.37m는 이후 완전히
+# 제거했다 — RISING_TOLERANCE 아래 "PEAK_Z_THRESHOLD 제거" 주석 참고.)
 PEAK_DROP_THRESHOLD = 0.35  # m — 피크 대비 최소 하락폭 (낙하 확정)
 MIN_DESCENT_FRAMES  = 2     # 피크 이후 연속 하강 최소 프레임 수 (200ms)
 
@@ -63,11 +64,27 @@ MIN_AVG_DESCENT_SPEED = 1.0  # m/s — 피크~마지막 프레임 평균 하강 
 # 변화량을 직접 보는 편이 더 즉각적이다.
 RISING_TOLERANCE = 0.03  # m — 프레임 간 이 값 넘게 상승하면 하강 중이 아님
 
-# 경로 3 — 자유낙하 궤적: PEAK_Z_THRESHOLD 같은 절대 높이 기준 없이, 최근
-# 궤적 자체가 "자유낙하답게" 가속하며 떨어지고 있으면 어디서 처음
-# 포착됐든 낙하로 본다. narrow-ROI 테스트에서 물체가 저고도에서 처음
-# 잡히거나(피크 자체가 임계값 미만) 근접장 잡음에 앵커링되는 경우처럼,
-# 시작 위치에 의존하는 기존 경로 1/2가 놓치는 케이스를 보완한다.
+# PEAK_Z_THRESHOLD 제거: 원래 여기 "피크 Z >= 0.37m"라는 게이트가 있어서,
+# 물체가 그 높이 미만에서 처음 잡히면(narrow-ROI, 저고도 근접장 등으로
+# 레이더가 실제로는 더 높은 곳에서 시작된 낙하의 초반을 못 보고 그 아래부터
+# 추적한 경우) 경로 1/2는 아예 평가되지 않고 경로 3(자유낙하)에만 기대야
+# 했다. 물체가 실제로 그 높이 이상에서 떨어졌더라도, 레이더가 못 본 구간은
+# 그냥 없는 셈 치고 처음 잡힌 지점부터 추적하면 충분하다는 판단으로 게이트
+# 자체를 없앴다. 실측 19개 배치·90회 전체를(covered/uncovered/dropball/
+# humanfall_Rside/drop_test_*/sphere_*/no_drop_hanging_objects_20260721 등)
+# 이 게이트 있음/없음으로 재검증한 결과, 신규로 걸리는 사례가 2건뿐이었고
+# (그중 sphere_drone/record_raw_20260804_223235는 data/labeling_worksheet.csv에
+# 사람이 label=1로 이미 확인해둔, 자동 판정이 놓치고 있던 진짜 낙하였다)
+# no_drop_hanging_objects_20260721를 포함해 그 어디서도 새 오탐이 생기지
+# 않았다 — PEAK_DROP_THRESHOLD(순 하락폭)와 MIN_AVG_DESCENT_SPEED(평균
+# 하강 속도)만으로도 노이즈는 이미 충분히 걸러지고 있었다는 뜻이다.
+
+# 경로 3 — 자유낙하 궤적: 최근 궤적 자체가 "자유낙하답게" 가속하며 떨어지고
+# 있으면 어디서 처음 포착됐든 낙하로 본다(경로 1/2도 이제 시작 높이를 안
+# 보지만, 경로 3은 PEAK_DROP_THRESHOLD 같은 최소 낙하폭 요구조차 없다 —
+# 순간적인 가속 패턴 하나만 본다는 점이 다르다). narrow-ROI 테스트에서
+# 물체가 저고도에서 처음 잡히거나 근접장 잡음에 앵커링되는 경우처럼,
+# 시작 위치에 의존하는 경로 1/2가 놓치는 케이스를 보완한다.
 #
 # 중력을 아는 값으로 써서 궤적에 포물선을 맞추는 방식(2점으로 초기속도
 # 추정 후 투영, 혹은 전체 창 최소제곱 적합)도 시도해봤지만, 실측 배치
@@ -501,7 +518,6 @@ class Track:
     def _peak_drop_check(self, valid: list[tuple[int, float]]) -> tuple[bool, str]:
         """경로 1/2 공용 — 피크 대비 하강폭 기반 판정.
 
-        - 피크 Z >= PEAK_Z_THRESHOLD
         - 피크 이후 유효 프레임이 MIN_DESCENT_FRAMES 이상 존재
         - 피크 이후 모든 값이 피크 이하 (반등 없음)
         - 마지막 두 유효 프레임 사이 궤적이 상승 중이 아님 (바운스/재상승 제외)
@@ -509,13 +525,12 @@ class Track:
         - 피크~마지막 프레임 사이 평균 하강 속도가 MIN_AVG_DESCENT_SPEED 이상
           (자유낙하가 아닌 느린 하강 배제 — MIN_AVG_DESCENT_SPEED 주석 참고)
 
+        피크의 절대 높이 자체는 더 이상 보지 않는다 — PEAK_Z_THRESHOLD 제거
+        주석 참고.
         """
         peak_pos   = max(range(len(valid)), key=lambda k: valid[k][1])
         peak_z     = valid[peak_pos][1]
         peak_frame = valid[peak_pos][0]
-
-        if peak_z < PEAK_Z_THRESHOLD:
-            return False, ""
 
         post_peak = [(i, h) for i, h in valid if i > peak_frame]
 
