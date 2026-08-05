@@ -9,13 +9,23 @@
 직접 봐가며 보정해서, 깨끗한 학습 데이터를 추가로 얻기 위한 것이다.
 
 동작 방식:
-  1. Z(t) 그래프에 프레임별 전체 포인트(회색)와 DBSCAN 클러스터 중심점을
-     띄운다.
+  1. Z(t) 그래프에 프레임별 전체 포인트(회색)와 DBSCAN 클러스터를 띄운다.
+     이때 record_and_view.py와 똑같이 FallDetector도 그대로 돌려서, 클러스터
+     전체 점(중심점 하나가 아니라)을 그 순간 자동 추적이 물어간 트랙 ID
+     색으로 칠한다 — 녹화 당시 저장된 _view.png와 같은 배색이라, 자동
+     추적이 어디서 트랙을 쪼개거나 갈아탔는지 보면서 그 위에 보정 궤적을
+     그릴 수 있다. 이 트랙 ID는 참고용 색일 뿐 매칭 로직과는 무관하다.
   2. 마우스로 낙하 물체라고 생각되는 궤적을 드래그해서 그린다.
   3. 그린 궤적의 각 프레임 시각에서, 그 프레임의 클러스터 "중심점" 중
      Z가 가장 가까운 것을 골라 매칭한다 — X/Y가 이미 뭉쳐있는 실제
      클러스터 후보 안에서만 고르므로, raw 포인트 중에서 고르는 것보다
      공간적으로 말이 안 되는 매칭(엉뚱한 노이즈를 줍는 것)을 줄인다.
+     단, 가장 가까운 후보라도 궤적과 max_z_gap(기본 0.3m)보다 멀면
+     매칭하지 않고 그 프레임은 그냥 건너뛴다(미매칭) — 그렇지 않으면
+     의도한 물체의 클러스터가 그 프레임에 없을 때도(드론처럼 동시에
+     떠 있는 다른 물체 등) 억지로 가장 가까운 엉뚱한 클러스터를 줍게
+     된다. --max-z-gap으로 조절하거나 실행 중 +/- 키로 즉시 재매칭할
+     수 있다.
   4. 매칭된 클러스터 시퀀스를 실제 프로덕션 Track 클래스에 그대로
      흘려보낸다(FallDetector.update()가 매 프레임 하는 것과 동일하게
      track.last_cluster + track.update(centroid)를 호출) — 학습용 특징을
@@ -29,6 +39,7 @@
 조작:
   드래그      궤적 그리기 (다시 드래그하면 이전 궤적을 덮어씀)
   r           지우고 다시 그리기
+  +/-         매칭 허용 거리(max_z_gap) 조절 — 이미 그린 궤적 있으면 즉시 재매칭
   Enter       확정 — 저장하고 종료
   q / 창 닫기  취소 — 아무것도 저장하지 않음
 
@@ -56,7 +67,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 from arda.processing.pointcloud import PointCloud
 from arda.processing.clustering import cluster_points
 from arda.detection.fall_detector import (
-    Track, FRAME_DT, _MODEL_FEATURE_ORDER, POST_TRIGGER_CHECK_FRAMES, TRACK_MAX_MISSES,
+    Track, FallDetector, FRAME_DT, _MODEL_FEATURE_ORDER, POST_TRIGGER_CHECK_FRAMES, TRACK_MAX_MISSES,
 )
 from arda.utils import load_processing_config
 
@@ -67,6 +78,13 @@ CLUSTER_MINSAMP = _cfg["cluster_min_samples"]
 ROI_X           = _cfg["roi_x"]
 ROI_Y           = _cfg["roi_y"]
 Z_RANGE         = _cfg["roi_z"]
+MAX_JUMP        = _cfg["max_jump"]
+
+DEFAULT_MAX_Z_GAP = 0.3  # m — 그려진 궤적과 이보다 먼 클러스터는 매칭하지 않는다
+
+# record_and_view.py/analyze_drops.py와 동일한 팔레트 — 배경에 자동 추적
+# 트랙 ID로 색을 입혀서, 녹화 당시 봤던 것과 같은 그림을 재현한다.
+TRACK_COLORS = ["#e74c3c", "#3498db", "#2ecc71", "#9b59b6", "#f39c12"]
 
 CSV_COLUMNS = [
     "batch", "trial", "file", "track_id", "view_png", "reason",
@@ -82,16 +100,27 @@ def load_frames(path: Path, near_y_max: float | None = None,
                  min_doppler_mag: float | None = None) -> list[dict]:
     """analyze_drops.py의 replay()와 동일한 전처리(SNR/ROI 필터 → DBSCAN)로
     프레임별 전체 포인트·클러스터 후보를 뽑는다. near_y_max/min_doppler_mag는
-    analyze_drops.py와 동일한 의미(사람 등 배경 후보 사전 배제용)."""
+    analyze_drops.py와 동일한 의미(사람 등 배경 후보 사전 배제용).
+
+    record_and_view.py가 녹화 당시 했던 것과 똑같이 FallDetector도 그대로
+    돌려서, 클러스터마다 그 순간 자동 추적이 물어간 트랙 ID를 함께 기록한다
+    — 배경을 이 트랙 ID로 색칠해서(TrackTool._plot_background) 녹화 당시
+    본 것과 같은 그림 위에서 궤적을 그릴 수 있게 하기 위함이다. 자동 추적
+    자체가 틀렸을 수도 있는 걸 보정하려고 이 도구를 쓰는 것이므로, 트랙 ID는
+    어디까지나 "참고용 색"일 뿐 매칭 로직에는 전혀 관여하지 않는다."""
     data = json.load(path.open())
+    detector = FallDetector(max_jump=MAX_JUMP)
     frames = []
     for fr in data["frames"]:
         pc = (PointCloud(fr["points"])
               .filter_snr(MIN_SNR)
               .filter_roi(x_range=ROI_X, y_range=ROI_Y, z_range=Z_RANGE))
-        clusters = cluster_points(pc, eps=CLUSTER_EPS, min_samples=CLUSTER_MINSAMP)
+        clusters_all = cluster_points(pc, eps=CLUSTER_EPS, min_samples=CLUSTER_MINSAMP)
 
-        candidates = clusters
+        detector.update(clusters_all)
+        track_id_of = {id(t.last_cluster): t.id for t in detector.tracks if t.last_cluster is not None}
+
+        candidates = clusters_all
         if near_y_max is not None:
             candidates = [c for c in candidates if c.centroid()[1] <= near_y_max]
         if min_doppler_mag is not None:
@@ -102,6 +131,7 @@ def load_frames(path: Path, near_y_max: float | None = None,
             "t": fr["t"],
             "all_xyz": pc.xyz.copy() if len(pc) > 0 else np.empty((0, 3)),
             "clusters": candidates,
+            "track_id_of": {id(c): track_id_of.get(id(c)) for c in candidates},
         })
     return frames
 
@@ -112,9 +142,11 @@ class TraceTool:
     """Z(t) 그래프 위에서 마우스 드래그로 궤적을 그리고, 프레임별 DBSCAN
     클러스터 중심점에 매칭해 보여주는 인터랙티브 도구."""
 
-    def __init__(self, frames: list[dict], title: str, save_path: Path):
+    def __init__(self, frames: list[dict], title: str, save_path: Path,
+                 max_z_gap: float = DEFAULT_MAX_Z_GAP):
         self.frames = frames
         self.save_path = save_path
+        self.max_z_gap = max_z_gap
         self.drawn: list[tuple[float, float]] = []
         self.drawing = False
         self.matched: list[tuple[int, PointCloud | None]] | None = None
@@ -132,7 +164,8 @@ class TraceTool:
         self.status = self.ax.text(
             0.01, 0.99, "", transform=self.ax.transAxes, va="top", ha="left", fontsize=9,
             bbox=dict(boxstyle="round", fc="white", ec="gray", alpha=0.9), zorder=10)
-        self._set_status("드래그로 낙하 물체 궤적을 그리세요  (Enter=확정 / r=다시 그리기 / q=취소)")
+        self._set_status(f"드래그로 낙하 물체 궤적을 그리세요  (max_z_gap={self.max_z_gap:.2f}m, +/-로 조절"
+                         f" / Enter=확정 / r=다시 그리기 / q=취소)")
 
         self.fig.canvas.mpl_connect("button_press_event", self._on_press)
         self.fig.canvas.mpl_connect("motion_notify_event", self._on_move)
@@ -140,6 +173,7 @@ class TraceTool:
         self.fig.canvas.mpl_connect("key_press_event", self._on_key)
 
     def _plot_background(self, title: str):
+        seen_tid: set[int] = set()
         for f in self.frames:
             pts = f["all_xyz"]
             if len(pts):
@@ -148,13 +182,25 @@ class TraceTool:
         for f in self.frames:
             for c in f["clusters"]:
                 cen = c.centroid()
-                if cen is not None:
-                    self.ax.scatter([f["t"]], [cen[2]], c="#2c3e50", s=45,
-                                     marker="o", edgecolors="white", linewidths=0.6, zorder=4)
+                if cen is None:
+                    continue
+                tid = f["track_id_of"].get(id(c))
+                color = TRACK_COLORS[tid % len(TRACK_COLORS)] if tid is not None else "#2c3e50"
+                # record_and_view.py처럼 클러스터의 모든 점을 트랙 색으로 찍어
+                # 크기·모양이 보이게 한다 — 중심점 하나만 찍으면 큰 클러스터도
+                # 작은 클러스터도 똑같은 점 하나로 보여서 구분이 안 된다.
+                self.ax.scatter(np.full(len(c.xyz), f["t"]), c.xyz[:, 2],
+                                 c=color, s=14, alpha=0.75, zorder=3)
+                self.ax.scatter([f["t"]], [cen[2]], c=color, s=55, marker="o",
+                                 edgecolors="black", linewidths=0.7, zorder=4)
+                if tid is not None and tid not in seen_tid:
+                    seen_tid.add(tid)
+                    self.ax.annotate(f"T{tid}", (f["t"], cen[2]), textcoords="offset points",
+                                      xytext=(4, 5), fontsize=7.5, fontweight="bold", color=color, zorder=5)
         self.ax.axhline(0, color="brown", lw=1, ls="--", alpha=0.5)
         self.ax.set_xlabel("Time (s)")
         self.ax.set_ylabel("Z (m)")
-        self.ax.set_title(f"{title}  (회색=전체 포인트, 남색 원=DBSCAN 클러스터 중심)")
+        self.ax.set_title(f"{title}  (회색=전체 포인트, 색상=자동 추적 트랙 ID — record_and_view.py와 동일 배색, 참고용)")
         self.ax.grid(alpha=0.3)
 
     def _on_press(self, event):
@@ -185,7 +231,11 @@ class TraceTool:
         self.fig.canvas.draw_idle()
 
     def _match(self):
-        """그려진 궤적의 각 프레임 시각에서 가장 가까운 클러스터 중심을 고른다."""
+        """그려진 궤적의 각 프레임 시각에서, max_z_gap 이내로 가장 가까운
+        클러스터 중심을 고른다. 가장 가까운 후보조차 max_z_gap보다 멀면
+        그 프레임은 매칭하지 않는다 — 그렇지 않으면 의도한 물체의 클러스터가
+        그 프레임에 없을 때(드론처럼 동시에 다른 물체가 떠 있는 경우 등)도
+        억지로 엉뚱한 클러스터를 줍게 된다."""
         if len(self.drawn) < 2:
             self._set_status("궤적이 너무 짧습니다 — 다시 드래그해서 그려주세요")
             self.fig.canvas.draw_idle()
@@ -197,6 +247,7 @@ class TraceTool:
         t_min, t_max = ts_drawn[0], ts_drawn[-1]
 
         matched: list[tuple[int, PointCloud | None]] = []
+        n_rejected = 0
         for idx, f in enumerate(self.frames):
             t = f["t"]
             if t < t_min or t > t_max or not f["clusters"]:
@@ -204,13 +255,20 @@ class TraceTool:
                 continue
             z_interp = float(np.interp(t, ts_drawn, zs_drawn))
             nearest = min(f["clusters"], key=lambda c: abs(float(c.centroid()[2]) - z_interp))
+            gap = abs(float(nearest.centroid()[2]) - z_interp)
+            if gap > self.max_z_gap:
+                matched.append((idx, None))
+                n_rejected += 1
+                continue
             matched.append((idx, nearest))
 
         self.matched = matched
         mt = [self.frames[idx]["t"] for idx, c in matched if c is not None]
         mz = [float(c.centroid()[2]) for _, c in matched if c is not None]
         self.match_line.set_data(mt, mz)
-        self._set_status(f"매칭 {len(mt)}프레임 — Enter로 확정 / r로 다시 그리기 / q로 취소")
+        reject_note = f"  (거리초과로 제외 {n_rejected}개)" if n_rejected else ""
+        self._set_status(f"매칭 {len(mt)}프레임{reject_note}  max_z_gap={self.max_z_gap:.2f}m"
+                         f" — Enter=확정 / r=다시 그리기 / +/-=거리조절 / q=취소")
         self.fig.canvas.draw_idle()
 
     def _on_key(self, event):
@@ -221,6 +279,12 @@ class TraceTool:
             self.match_line.set_data([], [])
             self._set_status("드래그로 다시 그리세요")
             self.fig.canvas.draw_idle()
+        elif event.key in ("+", "="):
+            self.max_z_gap = round(self.max_z_gap + 0.05, 2)
+            self._rematch_or_report_gap()
+        elif event.key == "-":
+            self.max_z_gap = max(0.05, round(self.max_z_gap - 0.05, 2))
+            self._rematch_or_report_gap()
         elif event.key == "enter":
             if self.matched is None:
                 self._set_status("먼저 궤적을 그려주세요")
@@ -234,6 +298,15 @@ class TraceTool:
         elif event.key == "q":
             self.confirmed = False
             plt.close(self.fig)
+
+    def _rematch_or_report_gap(self):
+        """+/- 로 max_z_gap을 바꿨을 때: 이미 그린 궤적이 있으면 즉시
+        재매칭해서 보여주고, 없으면 상태 표시줄의 값만 갱신한다."""
+        if len(self.drawn) >= 2:
+            self._match()
+        else:
+            self._set_status(f"max_z_gap={self.max_z_gap:.2f}m — 드래그로 궤적을 그리세요 (+/-로 조절)")
+            self.fig.canvas.draw_idle()
 
     def _set_status(self, msg: str):
         self.status.set_text(msg)
@@ -340,6 +413,9 @@ def parse_args():
                    help="이 거리(m)보다 먼 클러스터는 후보에서 제외 (analyze_drops.py와 동일)")
     p.add_argument("--min-doppler-mag", type=float, default=None,
                    help="|도플러|가 이보다 작은 클러스터는 후보에서 제외 (analyze_drops.py와 동일)")
+    p.add_argument("--max-z-gap", type=float, default=DEFAULT_MAX_Z_GAP,
+                   help=f"그려진 궤적과 이 거리(m)보다 먼 클러스터는 매칭하지 않음 (기본 {DEFAULT_MAX_Z_GAP}m, "
+                        "실행 중 +/-로도 조절 가능)")
     return p.parse_args()
 
 
@@ -355,7 +431,8 @@ def main():
     save_name = f"{src.stem}_manual_track.png"
     save_path = src.parent / save_name
 
-    tool = TraceTool(frames, title=f"{batch}/{src.name}", save_path=save_path)
+    tool = TraceTool(frames, title=f"{batch}/{src.name}", save_path=save_path,
+                      max_z_gap=args.max_z_gap)
     matched = tool.run()
     if matched is None:
         print("[취소] 아무것도 저장하지 않았습니다.")
