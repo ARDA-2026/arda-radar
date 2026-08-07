@@ -24,10 +24,7 @@ def test_fall_detected_on_height_drop():
     # 처음 몇 프레임은 높은 위치 (피크 형성)
     for _ in range(3):
         detector.update([_make_pc(z=1.5, doppler=0.0)])
-    # 물리적으로 말이 되는(중력 가속) 연속 하강 — 매칭 시 가속도 타당성
-    # 체크(MAX_MATCH_ACCEL)를 통과하려면 한 물체가 100ms 만에 순간이동하듯
-    # 큰 폭으로 뛰면 안 되고, 실제 자유낙하 물리를 따라야 같은 트랙이
-    # 계속 매칭된다.
+    # 물리적으로 말이 되는(중력 가속) 연속 하강
     g, dt, h0 = 9.8, 0.1, 1.5
     fell = False
     for i in range(1, 5):
@@ -96,12 +93,8 @@ def test_kalman_smooths_single_spurious_jump():
 def test_fall_stays_confirmed_after_bounce_back_up():
     # 한 번 낙하로 확정된 트랙은 이후 궤적이 반등하더라도(바운스, 혹은
     # 바닥 노이즈로 무게중심이 끌려 올라가는 경우) 계속 낙하로 보고해야
-    # 한다 — 원래는 매 프레임 다시 판정해서 반등하면 즉시 미확정으로
-    # 되돌렸는데, 착지 후 바닥 근처 센서 노이즈로 반등/정체 조건에
-    # 반복해서 걸렸다 풀렸다 하면서 같은 낙하 사건이 한 녹화 안에서 여러
-    # 번 "새로 감지됨"으로 재발화하는 문제가 있었다(narrow_roi 재생에서
-    # 확인, data/reference/wrongChoice.png 관련 분석). 한 번 확정된 사실은
-    # 그 트랙이 살아있는 동안 번복되지 않는다(래치).
+    # 한다 — 확정된 사실은 그 트랙이 살아있는 동안 번복되지 않는다(래치,
+    # 이유는 fall_detector.py Track 클래스 docstring 참고).
     detector = FallDetector(history_window=10)
     fell = False
     for z in [0.6, 0.6, 0.6, 0.5, 0.35, 0.2, 0.1, 0.05]:
@@ -162,14 +155,11 @@ def test_freefall_detected_regardless_of_starting_height():
 
 
 def test_peak_drop_detected_regardless_of_starting_height():
-    # 경로 1/2: 예전엔 PEAK_Z_THRESHOLD(0.37m) 게이트 때문에, 물체가 실제로는
-    # 더 높은 곳에서 떨어졌더라도 레이더가 그 높이에서는 못 보고 더 낮은
-    # 위치(여기선 0.15m)부터 잡히기 시작하면 경로 1/2가 아예 평가되지 않고
-    # 경로 3(자유낙하 가속 패턴)에만 기댈 수밖에 없었다. 등속(가속 없는)
-    # 하강이라 경로 3은 반응하지 않지만, 순 하락폭(PEAK_DROP_THRESHOLD)과
-    # 평균 속도(MIN_AVG_DESCENT_SPEED) 조건은 넉넉히 만족하므로 경로 1/2가
-    # 시작 높이와 무관하게 낙하로 판정해야 한다 (fall_detector.py의
-    # "PEAK_Z_THRESHOLD 제거" 주석 참고 — 실측 19개 배치 재검증으로 확인됨).
+    # 경로 1/2는 피크의 절대 높이를 보지 않는다(fall_detector.py의
+    # "PEAK_Z_THRESHOLD 제거" 주석 참고) — 물체가 낮은 위치(여기선 0.15m)
+    # 부터 잡히기 시작해도, 등속(가속 없는) 하강이라 경로 3은 반응하지
+    # 않지만 순 하락폭·평균 속도 조건은 만족하므로 경로 1/2가 시작 높이와
+    # 무관하게 낙하로 판정해야 한다.
     detector = FallDetector(history_window=10)
     fell = False
     for z in [0.15, 0.00, -0.15, -0.30]:  # 등속 -1.5 m/s, 순 하락폭 0.45m

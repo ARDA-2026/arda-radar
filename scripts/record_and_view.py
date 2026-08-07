@@ -1,14 +1,12 @@
-"""레이더 데이터 녹화 + 궤적 시각화 (다중 추적) — record.py/record_raw.py를
-이 스크립트 하나로 통합했다.
+"""레이더 데이터 녹화 + 궤적 시각화 (다중 추적).
 
 기본 동작: 녹화 후 현재 config(SNR/ROI/클러스터링) 파이프라인 그대로
 화면에 시각화만 하고 끝난다 — 아무것도 저장하지 않는다.
 
 --label을 지정하면 라벨링 작업(예: data/labeling_worksheet.csv)에 바로
 쓸 수 있게, 필터 이전 원시 포인트(json)와 시각화 이미지(png)를 함께
-data/raw/<라벨>/ 아래 저장한다 — 이전엔 record_raw.py로 녹화하고 시각화는
-별도 스크립트로 다시 만들어야 했는데, 한 번에 끝난다. 저장된 raw json은
-scripts/analyze_drops.py로 나중에 다른 필터 설정으로도 재생할 수 있다
+data/raw/<라벨>/ 아래 저장한다. 저장된 raw json은 scripts/analyze_drops.py로
+나중에 다른 필터 설정으로도 재생할 수 있다
 (스키마: {"meta": {...}, "frames": [{"t", "frame", "points"}, ...]}).
 
 Left  : Z over time — 모든 프레임의 포인트·트랙별 높이 변화 (색=트랙 ID)
