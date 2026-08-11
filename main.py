@@ -11,7 +11,9 @@ from arda.detection import FallDetector
 from arda.visualization import RealtimePlotter
 from arda.utils import (
     CoordSender,
+    ThermalEngaged,
     ThermalTriggerSender,
+    ThermalVerdict,
     ThermalVerdictReceiver,
     get_logger,
     load_processing_config,
@@ -87,12 +89,18 @@ def main() -> None:
     # 새 낙하가 확정돼도 기본적으로 중복 트리거를 보내지 않는다(한 번에
     # 하나만 판정). 다만 새로 확정된 낙하의 confidence가 지금 대기 중인
     # 후보보다 높으면 예외적으로 기존 대기를 취소하고 새 후보로 즉시
-    # 대체한다 — 서보도 같은 confidence 비교로 독립적으로 더 유력한
-    # 후보 쪽으로 전환하므로, 열화상도 같은 기준으로 따라가야 서보가
-    # 실제로 보고 있는 지점과 열화상이 판정하는 지점이 어긋나지 않는다.
+    # 대체한다 — 단, 열화상이 이번 대기에서 이미 열원을 검출해 engaged
+    # 신호를 보내온 뒤(pending_engaged)라면 confidence와 무관하게 이 선점을
+    # 하지 않는다. arda_servo.ServoController._thermal_engaged와 같은 원칙:
+    # 열화상이 실제 열원을 붙잡아 추적을 시작한 순간부터는 열화상이 우선권을
+    # 갖는다 — 그래야 서보가 실제로 보고 있는 지점과 열화상이 판정하는
+    # 지점이 어긋나지 않는다. (구버전 thermal-camera는 engaged 신호를 보내지
+    # 않으므로 pending_engaged가 항상 False로 남아 기존처럼 confidence만으로
+    # 선점된다.)
     pending_latlon = None
     pending_confidence = 0.0
     pending_since = 0.0
+    pending_engaged = False
     # FallDetector.update()는 한 번 확정된 트랙에 대해 계속 True를 반환하므로
     # (래치), 마지막으로 반응(서보 전송·로그·열화상 트리거)한 트랙 id를
     # 기억해 "새로 확정된 낙하"일 때만 반응하고 같은 낙하가 계속 보고되는
@@ -160,16 +168,26 @@ def main() -> None:
                         pending_latlon = (lat, lon)
                         pending_confidence = detector.last_fall_confidence
                         pending_since = time.time()
+                        pending_engaged = False
                         logger.info(
                             "열화상 판정 요청 전송 — lat=%.6f lon=%.6f confidence=%.2f, 회신 대기 중",
                             lat, lon, pending_confidence,
+                        )
+                    elif pending_engaged:
+                        # 열화상이 이미 대기 중인 낙하의 열원을 붙잡아 추적
+                        # 중이다 — confidence와 무관하게 선점하지 않는다.
+                        logger.debug(
+                            "더 높은 확률의 낙하 후보(%.2f > %.2f) 발견했지만 열화상이 이미 열원을 "
+                            "추적 중이라 무시함 — 열화상이 우선권을 가짐",
+                            detector.last_fall_confidence, pending_confidence,
                         )
                     elif detector.last_fall_confidence > pending_confidence:
                         # 이미 판정 대기 중인 낙하보다 이번에 확정된 낙하의
                         # confidence가 더 높다 — 기존 대기(및 그 판정 결과)는
                         # 포기하고 이 후보로 즉시 대체한다. arda-thermal-test는
                         # 새 트리거를 받으면 진행 중이던 관찰을 중단하고 이
-                        # 트리거로 즉시 재시작한다.
+                        # 트리거로 즉시 재시작한다(단, 그쪽도 이미 engaged면
+                        # 무시하고 계속 관찰함 — thermal_main.py 참고).
                         logger.info(
                             "더 높은 확률의 낙하 후보 발견(%.2f > %.2f) — 기존 판정 대기 취소, "
                             "새 트리거 전송 lat=%.6f lon=%.6f",
@@ -179,10 +197,14 @@ def main() -> None:
                         pending_latlon = (lat, lon)
                         pending_confidence = detector.last_fall_confidence
                         pending_since = time.time()
+                        pending_engaged = False
 
                 if thermal_receiver:
-                    verdict = thermal_receiver.recv()
-                    if verdict is not None and pending_latlon is not None:
+                    result = thermal_receiver.recv()
+                    if isinstance(result, ThermalEngaged) and pending_latlon is not None:
+                        pending_engaged = True
+                    elif isinstance(result, ThermalVerdict) and pending_latlon is not None:
+                        verdict = result
                         vlat, vlon = pending_latlon
                         if verdict.person:
                             logger.warning("낙하 위치(GPS) lat=%.6f lon=%.6f — 열화상 확인됨", vlat, vlon)
@@ -192,6 +214,7 @@ def main() -> None:
                             logger.info("낙하 판정 기각 — 열화상에서 사람 미확인 (lat=%.6f lon=%.6f)", vlat, vlon)
                         pending_latlon = None
                         pending_confidence = 0.0
+                        pending_engaged = False
                     elif (
                         pending_latlon is not None
                         and (time.time() - pending_since) > args.thermal_pending_timeout
@@ -202,6 +225,7 @@ def main() -> None:
                         )
                         pending_latlon = None
                         pending_confidence = 0.0
+                        pending_engaged = False
 
                 primary = detector.primary_track
                 if plotter and primary is not None and primary.last_cluster is not None:
