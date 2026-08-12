@@ -151,15 +151,11 @@ def main() -> None:
                     x, y, _ = detector.last_fall_centroid
                     lat, lon = local_to_latlon(x, y, site_lat, site_lon, site_heading_deg)
 
-                    # fall_detector.py의 Track이 이미 "FALL DETECTED [track#N ...]"를
-                    # 찍지만, run_all.sh처럼 여러 로그가 섞여 나올 때 놓치기 쉬워
-                    # 레이더가 낙하로 판단한 순간을 여기서 한 번 더 눈에 띄게 남긴다.
-                    logger.warning("*" * 50)
-                    logger.warning("레이더 낙하 판단 — 로컬 X=%.2f Y=%.2f", x, y)
-                    logger.warning("*" * 50)
-
                     if not args.thermal_gate:
-                        logger.warning("낙하 위치(GPS) lat=%.6f lon=%.6f", lat, lon)
+                        logger.warning(
+                            "낙하 위치(GPS) lat=%.6f lon=%.6f confidence=%.2f",
+                            lat, lon, detector.last_fall_confidence,
+                        )
                     elif pending_latlon is None:
                         # 대기 중인 낙하가 없으면 바로 트리거. 카메라가 서보에
                         # 고정 장착돼 서보가 향한 곳을 그대로 보므로, 좌표가
@@ -176,9 +172,9 @@ def main() -> None:
                     elif pending_engaged:
                         # 열화상이 이미 대기 중인 낙하의 열원을 붙잡아 추적
                         # 중이다 — confidence와 무관하게 선점하지 않는다.
-                        logger.debug(
-                            "더 높은 확률의 낙하 후보(%.2f > %.2f) 발견했지만 열화상이 이미 열원을 "
-                            "추적 중이라 무시함 — 열화상이 우선권을 가짐",
+                        logger.info(
+                            "[제어권 유지] 더 높은 확률의 낙하 후보(%.2f > %.2f) 발견 — 열화상이 "
+                            "이미 열원을 추적 중이라 무시함",
                             detector.last_fall_confidence, pending_confidence,
                         )
                     elif detector.last_fall_confidence > pending_confidence:
@@ -189,8 +185,8 @@ def main() -> None:
                         # 트리거로 즉시 재시작한다(단, 그쪽도 이미 engaged면
                         # 무시하고 계속 관찰함 — thermal_main.py 참고).
                         logger.info(
-                            "더 높은 확률의 낙하 후보 발견(%.2f > %.2f) — 기존 판정 대기 취소, "
-                            "새 트리거 전송 lat=%.6f lon=%.6f",
+                            "[제어권 이동] 더 높은 확률의 낙하 후보 발견(%.2f > %.2f) — 기존 판정 "
+                            "대기 취소, 새 트리거 전송 lat=%.6f lon=%.6f",
                             detector.last_fall_confidence, pending_confidence, lat, lon,
                         )
                         thermal_sender.send()
