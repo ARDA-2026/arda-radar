@@ -89,14 +89,15 @@ def main() -> None:
     # 새 낙하가 확정돼도 기본적으로 중복 트리거를 보내지 않는다(한 번에
     # 하나만 판정). 다만 새로 확정된 낙하의 confidence가 지금 대기 중인
     # 후보보다 높으면 예외적으로 기존 대기를 취소하고 새 후보로 즉시
-    # 대체한다 — 단, 열화상이 이번 대기에서 이미 열원을 검출해 engaged
+    # 대체한다 — 단, 열화상이 이번 대기에서 원하는 모양과 이미 매칭돼 engaged
     # 신호를 보내온 뒤(pending_engaged)라면 confidence와 무관하게 이 선점을
-    # 하지 않는다. arda_servo.ServoController._thermal_engaged와 같은 원칙:
-    # 열화상이 실제 열원을 붙잡아 추적을 시작한 순간부터는 열화상이 우선권을
-    # 갖는다 — 그래야 서보가 실제로 보고 있는 지점과 열화상이 판정하는
-    # 지점이 어긋나지 않는다. (구버전 thermal-camera는 engaged 신호를 보내지
-    # 않으므로 pending_engaged가 항상 False로 남아 기존처럼 confidence만으로
-    # 선점된다.)
+    # 하지 않는다. 단순히 열이 감지된 것만으로는(사람 모양이 아닌 반사광,
+    # 손 등) engaged가 되지 않는다. arda_servo.ServoController._thermal_engaged와
+    # 같은 원칙: 열화상이 원하는 모양과 매칭되기 시작한 순간부터는 열화상이
+    # 우선권을 갖는다 — 그래야 서보가 실제로 보고 있는 지점과 열화상이
+    # 판정하는 지점이 어긋나지 않는다. (구버전 thermal-camera는 engaged
+    # 신호를 보내지 않으므로 pending_engaged가 항상 False로 남아 기존처럼
+    # confidence만으로 선점된다.)
     pending_latlon = None
     pending_confidence = 0.0
     pending_since = 0.0
@@ -170,11 +171,12 @@ def main() -> None:
                             lat, lon, pending_confidence,
                         )
                     elif pending_engaged:
-                        # 열화상이 이미 대기 중인 낙하의 열원을 붙잡아 추적
-                        # 중이다 — confidence와 무관하게 선점하지 않는다.
+                        # 열화상이 이미 대기 중인 낙하에서 원하는 모양과
+                        # 매칭돼 추적 중이다 — confidence와 무관하게 선점하지
+                        # 않는다.
                         logger.info(
                             "[제어권 유지] 더 높은 확률의 낙하 후보(%.2f > %.2f) 발견 — 열화상이 "
-                            "이미 열원을 추적 중이라 무시함",
+                            "이미 매칭된 대상을 추적 중이라 무시함",
                             detector.last_fall_confidence, pending_confidence,
                         )
                     elif detector.last_fall_confidence > pending_confidence:
