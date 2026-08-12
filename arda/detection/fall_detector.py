@@ -310,8 +310,8 @@ class Track:
             self._trigger_confidence  = self._model_confidence()
             self._trigger_raw_height  = raw_height
             self.last_fall_centroid   = smoothed
-            logger.warning("FALL DETECTED [track#%d %s  conf=%.2f] — Z=%.2f m",
-                            self.id, reason, self._trigger_confidence, height)
+            logger.debug("FALL DETECTED [track#%d %s  conf=%.2f] — Z=%.2f m",
+                         self.id, reason, self._trigger_confidence, height)
 
         return fell
 
@@ -336,8 +336,8 @@ class Track:
             self._trigger_raw_height = last_valid_raw
             self.last_fall_centroid   = self.last_centroid
             z = self.last_centroid[2] if self.last_centroid is not None else float("nan")
-            logger.warning("FALL DETECTED (landing disappearance) [track#%d %s  conf=%.2f] — last Z=%.2f m",
-                           self.id, reason, self._trigger_confidence, z)
+            logger.debug("FALL DETECTED (landing disappearance) [track#%d %s  conf=%.2f] — last Z=%.2f m",
+                         self.id, reason, self._trigger_confidence, z)
 
         return fell
 
