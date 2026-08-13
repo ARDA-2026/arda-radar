@@ -7,8 +7,14 @@
 
 image_jpeg가 주어지면(arda-raset처럼 열화상을 같은 프로세스에서 통합 실행할
 때만 해당 — UDP 기반 arda-radar 단독 실행은 이 인자를 안 씀) base64로 인코딩해
-"thermal_image_base64"/"confirmed" 필드를 추가로 실어 보낸다. 웹이 아직
-개발 중이라 이 두 필드명은 확정 스펙이 아니라 잠정 값 — 백엔드와 맞춰볼 것.
+"thermal_image_base64"/"confirmed" 필드를 추가로 실어 보낸다.
+
+report_url을 arda-algo_general(한강 표류 예측 서버, 보통 노트북에서 별도
+실행)의 POST /report 엔드포인트로 설정하면, 이 함수가 이미 보내는
+payload(이미지 없는 호출은 "낙하 확정" 신호, 이미지 있는 호출은 열화상
+스트리밍)를 그대로 받아 시뮬레이션 시작/재수렴 + 열화상 시각화에 쓴다 —
+별도 브릿지 함수 없이 report_url 하나로 웹 리포트와 algo_general 연동을
+겸한다.
 """
 
 import base64
