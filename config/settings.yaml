@@ -37,10 +37,11 @@ site:
   lat: 37.5336       # 설치 지점 위도 (도)
   lon: 126.9364       # 설치 지점 경도 (도)
   heading_deg: 140.0    # 센서 정면(Y축)이 향하는 나침반 방위각 (정북 0°, 시계방향 동 90°)
-  # 열화상까지 확인해 낙하가 최종 확정됐을 때 {"lat","lon","timestamp"}
-  # (한국시간, 낙하 확정 신호 — 이미지 없음), 그리고 열화상 관찰/대기 중에는
-  # 매 프레임 이미지까지 얹어({"thermal_image_base64","confirmed"} 추가) 이
-  # 엔드포인트로 POST한다(arda/utils/web_report.py의 send_fall_report 참고).
-  # arda-algo_general(한강 표류 예측 서버, 보통 노트북에서 별도 실행)의
+  # arda-radar 자신은 이 값으로 더 이상 전송하지 않는다 — 열화상 추적으로
+  # 보정된 최종 좌표를 아는 쪽은 arda-servo뿐이라, 낙하 확정 시 실제 POST는
+  # arda_servo.controller.ServoController._end_tracking()이 담당한다(레이더
+  # 최초 감지 좌표가 아니라 보정 좌표를 보낸다). 여기 남겨둔 값은 설치 시
+  # arda-servo의 config/settings.yaml site.report_url에 똑같이 맞춰 넣기
+  # 위한 참고용 원본이다. arda-algo_general(한강 표류 예측 서버)의
   # POST /report로 맞춰서 쓴다 — 빈 문자열이면 전송하지 않는다.
   report_url: "http://172.30.139.191:8000/report"

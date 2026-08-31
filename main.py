@@ -19,7 +19,6 @@ from arda.utils import (
     load_processing_config,
     load_settings,
     local_to_latlon,
-    send_fall_report,
 )
 
 logger = get_logger(__name__)
@@ -60,9 +59,9 @@ def main() -> None:
     site_lat = site_cfg.get("lat", 0.0)
     site_lon = site_cfg.get("lon", 0.0)
     site_heading_deg = site_cfg.get("heading_deg", 0.0)
-    report_url = site_cfg.get("report_url", "")
-    if report_url:
-        logger.info("웹 전송 활성화 — 열화상 확인된 낙하만 %s로 POST", report_url)
+    # report_url 웹 전송은 여기서 하지 않는다 — arda-servo가 열화상 추적으로
+    # 보정된 최종 좌표로 직접 보고한다(arda_servo.controller.ServoController.
+    # _end_tracking() 참고, arda-servo의 site.report_url 설정 사용).
 
     cfg = load_processing_config(Path(args.settings))
 
@@ -205,9 +204,12 @@ def main() -> None:
                         verdict = result
                         vlat, vlon = pending_latlon
                         if verdict.person:
+                            # report_url 전송은 여기서 하지 않는다 — 이 vlat/vlon은
+                            # 레이더가 낙하를 처음 감지한 시점의 대략적인 좌표일 뿐이고,
+                            # 열화상 추적으로 보정된 최종 좌표는 arda-servo만 안다.
+                            # 실제 전송은 arda_servo.controller.ServoController.
+                            # _end_tracking()이 확정 시 보정 좌표로 담당한다.
                             logger.warning("낙하 위치(GPS) lat=%.6f lon=%.6f — 열화상 확인됨", vlat, vlon)
-                            if report_url:
-                                send_fall_report(report_url, vlat, vlon)
                         else:
                             logger.info("낙하 판정 기각 — 열화상에서 사람 미확인 (lat=%.6f lon=%.6f)", vlat, vlon)
                         pending_latlon = None
