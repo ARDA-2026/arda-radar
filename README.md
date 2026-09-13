@@ -15,7 +15,7 @@ ARDA/
 │   ├── visualization/     # 실시간 3D 플롯
 │   └── utils/             # 로거·설정 로더·좌표 변환·서보/열화상 연동 등 공통 유틸
 ├── data/
-│   ├── raw/                    # record_and_view.py --label로 녹화한 세션 (배치별 폴더, data/raw/README.md 참고)
+│   ├── raw/                    # record_and_view.py --label로 녹화한 세션 (배치별 폴더, data/README.md 참고)
 │   ├── labeling_worksheet.csv  # 낙하 신뢰도 모델 학습용 라벨링 데이터 ("낙하 신뢰도 모델" 절 참고)
 │   ├── reference/               # 특정 실패 사례를 보여주기 위해 남겨둔 참고용 캡처 이미지
 │   └── logs/                   # 실행 중 쌓이는 이벤트 로그
@@ -140,21 +140,22 @@ North = -x·sin(heading) + y·cos(heading)
 완전히 착지하기 전일 수 있어 신뢰할 수 없습니다 — 낙하는 바닥에서
 일어난다고 간주하고 수평 위치(위도/경도)만 보고합니다.
 
-### 웹 전송 (`site.report_url`)
+### 웹 전송
 
-열화상까지 확인을 마쳐 "사람"으로 최종 확정된 낙하만(레이더 낙하 판단,
-열화상 관찰/기각 같은 중간 과정은 로그로만 남고 전송하지 않음)
-[`send_fall_report()`](arda/utils/web_report.py)가 아래 최소 포맷 JSON을
-`site.report_url`로 POST합니다.
+이 저장소(`main.py`)는 낙하 위치를 웹으로 전송하지 않습니다 — 레이더가
+처음 감지한 좌표는 아직 보정 전(대략적인 조준값)이라, 열화상 추적으로
+보정한 최종 좌표를 아는 쪽인 `arda-servo`가 그 전송을 전담합니다
+(`ServoController._end_tracking()`이 `send_fall_report()`로
+POST — 자세한 내용은 arda-servo 저장소 README 참고). 이 저장소는 열화상
+확인이 끝나면 좌표를 경고 로그로만 남깁니다("열화상 확인됨").
 
-```json
-{"lat": 37.5336, "lon": 126.9364, "timestamp": "2026-08-07T15:32:10.123456+09:00"}
-```
-
-`timestamp`는 한국시간(KST, UTC+9) ISO8601입니다. `report_url`이
-빈 문자열(기본값)이면 전송하지 않습니다 — 실제 서버 URL이 정해지면
-`config/settings.yaml`에 채워 넣으세요. 전송 실패(네트워크 오류, 타임아웃)는
-예외를 던지지 않고 경고 로그만 남기므로 감지 루프가 멈추지 않습니다.
+`config/settings.yaml`의 `site.report_url`은 완전히 미사용 상태로
+참고용으로만 남아 있습니다. `arda-servo`를 통하지 않고 통합 실행하는
+`arda-raset`을 쓰는 경우, 전송 주소는 `arda-raset/main.py` 상단의
+`DEFAULT_REPORT_URL`(또는 `--report-url` 실행 인자)로 관리됩니다.
+[`send_fall_report()`](arda/utils/web_report.py) 함수 자체는 이 저장소에
+여전히 존재하지만(단위 테스트 포함), 이 저장소의 실행 경로에서는 어디서도
+호출되지 않는 죽은 코드입니다.
 
 ## 알고리즘 흐름
 
