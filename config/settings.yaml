@@ -34,14 +34,20 @@ visualization:
 # 자동으로 계산된다 (arda/utils/site.py의 local_to_latlon() 참고).
 # lat/lon은 반드시 실측(GPS)값으로 바꿔야 한다 — 아래는 자리표시용 예시값 (마포대교 중간지점 남동 방향).
 site:
+  # ⚠️ lat/lon/heading_deg는 arda-raset(main.py)이 raset으로 실행할 때는
+  # 더 이상 읽지 않는다 — arda-raset/main.py 상단의 DEFAULT_SITE_LAT/
+  # DEFAULT_SITE_LON/DEFAULT_SITE_HEADING_DEG(또는 --site-lat 등 실행 인자)로
+  # 하나로 통일했다(report_url과 같은 이유). 여기 값은 arda-radar를 이
+  # 저장소 단독으로 실행할 때만(main.py) 실제로 쓰인다 — 그때는 이 값을
+  # 그대로 고칠 것.
   lat: 37.5336       # 설치 지점 위도 (도)
   lon: 126.9364       # 설치 지점 경도 (도)
-  heading_deg: 140.0    # 센서 정면(Y축)이 향하는 나침반 방위각 (정북 0°, 시계방향 동 90°)
-  # arda-radar 자신은 이 값으로 더 이상 전송하지 않는다 — 열화상 추적으로
-  # 보정된 최종 좌표를 아는 쪽은 arda-servo뿐이라, 낙하 확정 시 실제 POST는
-  # arda_servo.controller.ServoController._end_tracking()이 담당한다(레이더
-  # 최초 감지 좌표가 아니라 보정 좌표를 보낸다). 여기 남겨둔 값은 설치 시
-  # arda-servo의 config/settings.yaml site.report_url에 똑같이 맞춰 넣기
-  # 위한 참고용 원본이다. arda-algo_general(한강 표류 예측 서버)의
-  # POST /report로 맞춰서 쓴다 — 빈 문자열이면 전송하지 않는다.
-  report_url: "http://172.30.139.191:8000/report"
+  heading_deg: 320.0    # 센서 정면(Y축)이 향하는 나침반 방위각 (정북 0°, 시계방향 동 90°)
+  # ⚠️ 이 값은 arda-radar 자신도, arda-raset도 더 이상 읽지 않는다(둘 다
+  # report_url 전송을 안 하거나 다른 곳에서 값을 가져옴) — 완전히 미사용
+  # 상태로 참고용으로만 남아있다. arda-raset(main.py)에서 report_url을
+  # 바꾸려면 arda-raset/main.py 상단의 DEFAULT_REPORT_URL을 고치거나
+  # --report-url로 실행 시 넘길 것 — 그쪽이 열화상 스트리밍/낙하 확정
+  # 좌표 전송을 전부 담당하는 단일 값이다. arda-radar를 이 저장소 단독으로
+  # 실행할 때도 report_url은 실제로 쓰이지 않는다(main.py 참고).
+  report_url: "http://172.30.139.125:8000/report"
